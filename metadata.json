@@ -1,0 +1,6 @@
+{
+  "name": "Vontext",
+  "description": "Process screen recording videos, extract frames, transcribe audio, and generate rich context PDF/ZIP packages for AI agents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vontext</string>
+    <string name="app_description">Process screen recording videos and generate rich contextual PDF/ZIP summaries for AI agents.</string>
+    
+    <!-- Navigation -->
+    <string name="tab_inicio">Inicio</string>
+    <string name="tab_historial">Historial</string>
+    <string name="tab_ajustes">Ajustes</string>
+
+    <!-- Home Tab -->
+    <string name="select_video">Seleccionar Video</string>
+    <string name="tap_to_select">Toca para seleccionar un video desde la galería</string>
+    <string name="notes_label">Notas Adicionales (Opcional)</string>
+    <string name="notes_placeholder">Pega aquí cualquier nota, log o instrucción adicional para la IA...</string>
+    <string name="interval_label">Intervalo de captura (segundos): %1$d</string>
+    <string name="interval_auto">Automático (Muestreo inteligente)</string>
+    <string name="process_btn">🚀 Procesar Video con Vontext</string>
+    
+    <!-- Settings Tab -->
+    <string name="settings_title">Configuración de Procesamiento</string>
+    <string name="api_key_label">API Key (OpenAI / Groq)</string>
+    <string name="api_key_hint">sk-...</string>
+    <string name="endpoint_label">Endpoint URL</string>
+    <string name="endpoint_hint">https://api.openai.com/v1</string>
+    <string name="model_label">Modelo Whisper</string>
+    <string name="model_hint">whisper-1</string>
+    <string name="interval_default">Intervalo de captura por defecto</string>
+    <string name="language_label">Idioma de la aplicación</string>
+    <string name="clear_history">Limpiar Historial de Trabajos</string>
+    <string name="clear_history_success">Historial borrado correctamente</string>
+    <string name="saves_settings">Ajustes guardados</string>
+
+    <!-- Processing Overlay -->
+    <string name="processing_title">Procesando Video...</string>
+    <string name="processing_warning">El procesamiento puede tomar varios minutos. No cierres la aplicación.</string>
+    
+    <!-- History Tab -->
+    <string name="history_title">Historial de Reportes</string>
+    <string name="no_jobs">No tienes ningún reporte generado aún</string>
+    <string name="status_completed">COMPLETADO</string>
+    <string name="status_processing">PROCESANDO</string>
+    <string name="status_failed">FALLIDO</string>
+    
+    <!-- Actions -->
+    <string name="open_pdf">Abrir PDF</string>
+    <string name="share_zip">Compartir ZIP</string>
+    <string name="delete_job">Eliminar trabajo</string>
+    <string name="transcription_header">Transcripción General Extraída:</string>
+    
+    <!-- Dialogs -->
+    <string name="select_mode_title">Seleccionar Modo Whisper</string>
+    <string name="mode_local">🏠 Local (Estimado, 100% Offline)</string>
+    <string name="mode_remote">☁️ Remoto (Requiere API Key / Conexión)</string>
+</resources>

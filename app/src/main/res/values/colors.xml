@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colors -->
+    <color name="primary">#4E6BF2</color>
+    <color name="primary_dark">#3B50C1</color>
+    <color name="teal_200">#B0C1EE</color>
+    <color name="teal_700">#3F51B5</color>
+    <color name="black">#FF1A1A1E</color>
+    <color name="white">#FFFFFFFF</color>
+    
+    <!-- Light themes -->
+    <color name="background">#FAFAFE</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_variant">#F0F3FC</color>
+    <color name="primary_container">#EBF0FE</color>
+    
+    <!-- Splash screen -->
+    <color name="splash_background">#FAFAFE</color>
+</resources>
