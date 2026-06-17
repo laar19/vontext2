@@ -33,7 +33,12 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         )
 
     // Current screen configuration state
-    var selectedVideoUri by mutableStateOf<Uri?>(null)
+    var selectedVideoUris by mutableStateOf<List<Uri>>(emptyList())
+    val selectedVideoUri: Uri?
+        get() = selectedVideoUris.firstOrNull()
+
+    var multipleFilesMode by mutableStateOf("SEPARADOS") // "JUNTOS" or "SEPARADOS"
+
     var additionalNotes by mutableStateOf("")
     var frameInterval by mutableStateOf(5) // default 5 seconds
     var whisperMode by mutableStateOf("LOCAL") // "LOCAL" or "REMOTE"
@@ -126,8 +131,15 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         frameInterval = settingsRepository.getDefaultInterval()
     }
 
+    fun selectVideos(uris: List<Uri>) {
+        selectedVideoUris = uris
+        if (uris.isNotEmpty()) {
+            addLog("Videos seleccionados (${uris.size}): ${uris.joinToString { it.lastPathSegment ?: "video.mp4" }}")
+        }
+    }
+
     fun selectVideo(uri: Uri?) {
-        selectedVideoUri = uri
+        selectedVideoUris = if (uri != null) listOf(uri) else emptyList()
         if (uri != null) {
             addLog("Video seleccionado: ${uri.lastPathSegment ?: "video.mp4"}")
         }
@@ -139,7 +151,7 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startProcessing(onComplete: (String) -> Unit) {
-        val uri = selectedVideoUri ?: return
+        if (selectedVideoUris.isEmpty()) return
         isProcessing = true
         currentProgress = 0
         currentStatusMessage = "Iniciando..."
@@ -149,22 +161,61 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val model = settingsRepository.getModel()
-                val jobId = videoProcessor.process(
-                    videoUri = uri,
-                    notes = additionalNotes,
-                    frameInterval = frameInterval,
-                    whisperModel = model,
-                    whisperMode = whisperMode
-                ) { progress, message ->
-                    currentProgress = progress
-                    currentStatusMessage = message
-                    addLog(message)
+                if (selectedVideoUris.size == 1) {
+                    val uri = selectedVideoUris.first()
+                    val jobId = videoProcessor.process(
+                        videoUri = uri,
+                        notes = additionalNotes,
+                        frameInterval = frameInterval,
+                        whisperModel = model,
+                        whisperMode = whisperMode
+                    ) { progress, message ->
+                        currentProgress = progress
+                        currentStatusMessage = message
+                        addLog(message)
+                    }
+                    selectedVideoUris = emptyList()
+                    additionalNotes = ""
+                    onComplete(jobId)
+                } else if (multipleFilesMode == "JUNTOS") {
+                    val jobId = videoProcessor.processMultipleTogether(
+                        videoUris = selectedVideoUris,
+                        notes = additionalNotes,
+                        frameInterval = frameInterval,
+                        whisperModel = model,
+                        whisperMode = whisperMode
+                    ) { progress, message ->
+                        currentProgress = progress
+                        currentStatusMessage = message
+                        addLog(message)
+                    }
+                    selectedVideoUris = emptyList()
+                    additionalNotes = ""
+                    onComplete(jobId)
+                } else {
+                    val totalVideos = selectedVideoUris.size
+                    var lastCompletedJobId = ""
+                    selectedVideoUris.forEachIndexed { index, uri ->
+                        addLog("Iniciando procesamiento de archivo ${index + 1} de $totalVideos...")
+                        val jobId = videoProcessor.process(
+                            videoUri = uri,
+                            notes = additionalNotes,
+                            frameInterval = frameInterval,
+                            whisperModel = model,
+                            whisperMode = whisperMode
+                        ) { progress, message ->
+                            val baseProgress = (index * 100) / totalVideos
+                            val chunkProgress = progress / totalVideos
+                            currentProgress = baseProgress + chunkProgress
+                            currentStatusMessage = "[Archivo ${index + 1}/$totalVideos] $message"
+                            addLog("[Archivo ${index + 1}/$totalVideos] $message")
+                        }
+                        lastCompletedJobId = jobId
+                    }
+                    selectedVideoUris = emptyList()
+                    additionalNotes = ""
+                    onComplete(lastCompletedJobId)
                 }
-                
-                // Clear state on successful launch
-                selectedVideoUri = null
-                additionalNotes = ""
-                onComplete(jobId)
             } catch (e: Exception) {
                 addLog("Error crítico: ${e.message}")
             } finally {

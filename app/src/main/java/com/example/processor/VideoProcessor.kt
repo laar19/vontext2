@@ -263,6 +263,247 @@ class VideoProcessor(
         return jobId
     }
 
+    suspend fun processMultipleTogether(
+        videoUris: List<Uri>,
+        notes: String?,
+        frameInterval: Int,
+        whisperModel: String,
+        whisperMode: String, // "LOCAL", "REMOTE"
+        onProgressUpdate: (Int, String) -> Unit
+    ): String {
+        val jobId = UUID.randomUUID().toString()
+        val createdAt = System.currentTimeMillis()
+
+        withContext(Dispatchers.IO) {
+            try {
+                onProgressUpdate(5, "Inicializando procesamiento de ${videoUris.size} archivos...")
+                val parentDir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "Vontext"
+                )
+                if (!parentDir.exists()) {
+                    parentDir.mkdirs()
+                }
+                
+                val outputDir = File(parentDir, "job_$jobId")
+                if (!outputDir.exists()) {
+                    outputDir.mkdirs()
+                }
+
+                // Initial DB Entry
+                val initialJob = Job(
+                    jobId = jobId,
+                    status = "PROCESSING",
+                    videoPath = "",
+                    videoFilename = videoUris.joinToString(", ") { it.lastPathSegment ?: "video.mp4" },
+                    hasAudio = false,
+                    videoDuration = 0f,
+                    additionalNotes = notes,
+                    progress = 5,
+                    progressMessage = "Iniciando procesamiento de múltiples videos...",
+                    errorMessage = null,
+                    createdAt = createdAt,
+                    completedAt = null,
+                    pdfPath = null,
+                    zipPath = null,
+                    frameInterval = frameInterval,
+                    whisperMode = whisperMode
+                )
+                jobRepository.insertJob(initialJob)
+
+                val consolidatedExtractedFrames = mutableListOf<FrameInfo>()
+                val sbTranscription = StringBuilder()
+                var totalDurationSec = 0f
+                var globalFrameNum = 1
+                var hasAnyAudio = false
+                var firstVideoPath = ""
+
+                videoUris.forEachIndexed { index, videoUri ->
+                    val videoIndexLabel = "Video ${index + 1} de ${videoUris.size}"
+                    onProgressUpdate(10 + (index * 80 / videoUris.size), "Procesando $videoIndexLabel: copiando archivo...")
+
+                    val tempVideoFile = File(context.cacheDir, "temp_video_${jobId}_$index.mp4")
+                    try {
+                        context.contentResolver.openInputStream(videoUri)?.use { input ->
+                            FileOutputStream(tempVideoFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        sbTranscription.append("\n\n=== Archivo: ${videoUri.lastPathSegment ?: "video.mp4"} ===\n[Error al abrir el archivo: ${e.message}]\n")
+                        return@forEachIndexed
+                    }
+
+                    val videoPath = tempVideoFile.absolutePath
+                    if (firstVideoPath.isEmpty()) {
+                        firstVideoPath = videoPath
+                    }
+
+                    // Metadata extraction
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(videoPath)
+                    } catch (e: Exception) {
+                        sbTranscription.append("\n\n=== Archivo: ${videoUri.lastPathSegment ?: "video.mp4"} ===\n[Error al leer metadatos: ${e.message}]\n")
+                        return@forEachIndexed
+                    }
+                    
+                    val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 1000L
+                    val durationSec = durationMs / 1000f
+                    totalDurationSec += durationSec
+                    val hasAudioStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+                    val hasAudio = hasAudioStr == "yes"
+                    if (hasAudio) hasAnyAudio = true
+
+                    // Setup step times for frame extraction on this video
+                    val stepTimesMs = mutableListOf<Long>()
+                    if (frameInterval == 0) {
+                        val count = 10
+                        val gap = durationMs / (count + 1)
+                        for (i in 1..count) {
+                            stepTimesMs.add(i * gap)
+                        }
+                    } else {
+                        val stepMs = frameInterval * 1000L
+                        var currentMs = stepMs
+                        while (currentMs < durationMs && stepTimesMs.size < 30) {
+                            stepTimesMs.add(currentMs)
+                            currentMs += stepMs
+                        }
+                        if (stepTimesMs.isEmpty()) {
+                            stepTimesMs.add(durationMs / 2)
+                        }
+                    }
+
+                    // Extract frames
+                    val currentVideoExtractedFrames = mutableListOf<FrameInfo>()
+                    stepTimesMs.forEachIndexed { frameIdx, timeMs ->
+                        val bitmap = try {
+                            retriever.getFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                ?: retriever.getFrameAtTime(timeMs * 1000)
+                        } catch (e: Exception) {
+                            null
+                        }
+                        
+                        if (bitmap != null) {
+                            val resized = if (bitmap.width > 1280) {
+                                val ratio = 1280f / bitmap.width
+                                Bitmap.createScaledBitmap(bitmap, 1280, (bitmap.height * ratio).toInt(), true)
+                            } else {
+                                bitmap
+                            }
+
+                            val frameFile = File(outputDir, "frame_v${index + 1}_${String.format("%03d", frameIdx + 1)}.jpg")
+                            FileOutputStream(frameFile).use { fos ->
+                                resized.compress(Bitmap.CompressFormat.JPEG, 85, fos)
+                            }
+                            
+                            val fInfo = FrameInfo(
+                                frameNum = globalFrameNum++,
+                                timestampMs = timeMs,
+                                path = frameFile.absolutePath
+                            )
+                            consolidatedExtractedFrames.add(fInfo)
+                            currentVideoExtractedFrames.add(fInfo)
+
+                            if (resized != bitmap) {
+                                resized.recycle()
+                            }
+                            bitmap.recycle()
+                        }
+                    }
+                    retriever.release()
+
+                    // Transcription of this video
+                    var videoTranscription = ""
+                    if (hasAudio) {
+                        if (whisperMode == "REMOTE") {
+                            val apiKey = settingsRepository.getApiKey()
+                            if (apiKey.isEmpty()) {
+                                videoTranscription = "[Error: API key no configurada. Transcripción estimada]\n" +
+                                        generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
+                            } else {
+                                try {
+                                    videoTranscription = executeRemoteWhisper(
+                                        tempVideoFile,
+                                        apiKey,
+                                        settingsRepository.getEndpoint(),
+                                        settingsRepository.getModel()
+                                    )
+                                } catch (e: Exception) {
+                                    videoTranscription = "[Error en API remota: ${e.message}. Transcripción estimada]\n" +
+                                            generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
+                                }
+                            }
+                        } else {
+                            videoTranscription = generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
+                        }
+                    } else {
+                        videoTranscription = "Este video específico no contiene pistas de audio."
+                    }
+
+                    val filename = videoUri.lastPathSegment ?: "video.mp4"
+                    sbTranscription.append("\n\n=== Archivo: $filename ===\n$videoTranscription\n")
+                }
+
+                // Consolidated PDF & ZIP
+                onProgressUpdate(90, "Generando reporte consolidado PDF y guardando reportes...")
+                val pdfFile = File(outputDir, "Reporte_Consolidado_Vontext_${jobId.take(6)}.pdf")
+                generatePdf(pdfFile, notes, totalDurationSec, consolidatedExtractedFrames, sbTranscription.toString())
+
+                val zipFile = File(outputDir.parent, "Reporte_Consolidado_Vontext_${jobId.take(6)}.zip")
+                createZip(outputDir, zipFile)
+
+                // Update final Job Entity in database
+                onProgressUpdate(100, "¡Trabajo grupal completado con éxito!")
+                val completedJob = Job(
+                    jobId = jobId,
+                    status = "COMPLETED",
+                    videoPath = firstVideoPath,
+                    videoFilename = videoUris.joinToString(", ") { it.lastPathSegment ?: "video.mp4" },
+                    hasAudio = hasAnyAudio,
+                    videoDuration = totalDurationSec,
+                    additionalNotes = notes,
+                    progress = 100,
+                    progressMessage = "Guardado en Downloads/Vontext/",
+                    errorMessage = null,
+                    createdAt = createdAt,
+                    completedAt = System.currentTimeMillis(),
+                    pdfPath = pdfFile.absolutePath,
+                    zipPath = zipFile.absolutePath,
+                    frameInterval = frameInterval,
+                    whisperMode = whisperMode,
+                    transcriptionText = sbTranscription.toString()
+                )
+                jobRepository.insertJob(completedJob)
+
+            } catch (e: Exception) {
+                onProgressUpdate(100, "Error: ${e.message}")
+                val failedJob = Job(
+                    jobId = jobId,
+                    status = "FAILED",
+                    videoPath = "",
+                    videoFilename = videoUris.joinToString(", ") { it.lastPathSegment ?: "video.mp4" },
+                    hasAudio = false,
+                    videoDuration = 0f,
+                    additionalNotes = notes,
+                    progress = 100,
+                    progressMessage = "Error: ${e.localizedMessage}",
+                    errorMessage = e.message,
+                    createdAt = createdAt,
+                    completedAt = System.currentTimeMillis(),
+                    pdfPath = null,
+                    zipPath = null,
+                    frameInterval = frameInterval,
+                    whisperMode = whisperMode
+                )
+                jobRepository.insertJob(failedJob)
+            }
+        }
+
+        return jobId
+    }
+
     private fun generateFallbackTranscript(notes: String?, durationSec: Float, frames: List<FrameInfo>): String {
         val sb = java.lang.StringBuilder()
         sb.append("[00:00] [Inicio] Iniciando grabación de la pantalla.\n")

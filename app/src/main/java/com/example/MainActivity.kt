@@ -157,7 +157,21 @@ fun getTxt(key: String, lang: String): String {
             "Local" -> "Local"
             "API Remota" -> "Remote API"
             "v2.1.1 • Listo" -> "v2.1.1 • Ready"
-            else -> key
+            "Seleccionar Videos" -> "Select Videos"
+            "Toca aquí para seleccionar uno o varios videos del almacenamiento local" -> "Tap here to select one or multiple videos from local storage"
+            "Agrupamiento de Reportes" -> "Report Grouping"
+            "Juntos (Un Reporte)" -> "Together (One Report)"
+            "Separados (N Reportes)" -> "Separated (N Reports)"
+            else -> {
+                if (key.startsWith("¡") && key.endsWith("Videos Seleccionados!")) {
+                    val count = key.substring(1, key.indexOf(" "))
+                    "$count Videos Selected!"
+                } else if (key.startsWith("¡1 Video Seleccionado!")) {
+                    "1 Video Selected!"
+                } else {
+                    key
+                }
+            }
         }
         else -> key
     }
@@ -211,8 +225,8 @@ fun openPdf(context: Context, filePath: String) {
         }
         context.startActivity(intent)
     } catch (e: Exception) {
-        Toast.makeText(context, "No se encontró un visualizador de PDF compatible. " +
-                "Puedes compartirlo por ZIP o abrirlo desde la carpeta Descargas/Vontext.", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "No se encontró un visualizador de PDF compatible. Abriendo menú para compartir...", Toast.LENGTH_LONG).show()
+        shareFile(context, filePath, "application/pdf")
     }
 }
 
@@ -365,9 +379,9 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
     val MutedGray = colors.MutedGray
 
     val filePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        viewModel.selectVideo(uri)
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        viewModel.selectVideos(uris)
     }
 
     LazyColumn(
@@ -402,8 +416,9 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
             }
         }
 
-        // Selected Video DropZone Card
+        // Selected Videos DropZone Card
         item {
+            val isSelected = viewModel.selectedVideoUris.isNotEmpty()
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -411,11 +426,11 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                     .testTag("select_video_card"),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (viewModel.selectedVideoUri != null) LightSage else WarmWhite
+                    containerColor = if (isSelected) LightSage else WarmWhite
                 ),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
-                    if (viewModel.selectedVideoUri != null) BrandGreen else SoftGrayBorder
+                    if (isSelected) BrandGreen else SoftGrayBorder
                 )
             ) {
                 Column(
@@ -429,45 +444,118 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                         modifier = Modifier
                             .size(56.dp)
                             .clip(CircleShape)
-                            .background(if (viewModel.selectedVideoUri != null) BrandGreen else LightSage),
+                            .background(if (isSelected) BrandGreen else LightSage),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (viewModel.selectedVideoUri != null) Icons.Default.CheckCircle else Icons.Default.Add,
+                            imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.Add,
                             contentDescription = null,
                             modifier = Modifier.size(28.dp),
-                            tint = if (viewModel.selectedVideoUri != null) WarmWhite else BrandGreen
+                            tint = if (isSelected) WarmWhite else BrandGreen
                         )
                     }
 
-                    if (viewModel.selectedVideoUri != null) {
+                    if (isSelected) {
+                        val count = viewModel.selectedVideoUris.size
                         Text(
-                            text = txt("¡Video Seleccionado!"),
+                            text = if (count == 1) txt("¡1 Video Seleccionado!") else txt("¡$count Videos Seleccionados!"),
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = BrandDarkGreen
                         )
                         Text(
-                            text = viewModel.selectedVideoUri?.lastPathSegment ?: "video.mp4",
+                            text = viewModel.selectedVideoUris.joinToString(", ") { it.lastPathSegment ?: "video.mp4" },
                             fontSize = 13.sp,
                             color = BrandGreen,
                             textAlign = TextAlign.Center,
-                            maxLines = 1,
+                            maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )
                     } else {
                         Text(
-                            text = txt("Seleccionar Video"),
+                            text = txt("Seleccionar Videos"),
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = CharcoalText
                         )
                         Text(
-                            text = txt("Toca aquí para seleccionar un video del almacenamiento local"),
+                            text = txt("Toca aquí para seleccionar uno o varios videos del almacenamiento local"),
                             fontSize = 13.sp,
                             color = GrayDetail,
                             textAlign = TextAlign.Center
                         )
+                    }
+                }
+            }
+        }
+
+        // Multiple files grouping mode selector card
+        if (viewModel.selectedVideoUris.size > 1) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = txt("Agrupamiento de Reportes"),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = GrayDetail
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (viewModel.multipleFilesMode == "JUNTOS") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
+                                .clickable { viewModel.multipleFilesMode = "JUNTOS" }
+                                .padding(14.dp)
+                                .testTag("multi_mode_juntos"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = if (viewModel.multipleFilesMode == "JUNTOS") BrandGreen else GrayDetail,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = txt("Juntos (Un Reporte)"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (viewModel.multipleFilesMode == "JUNTOS") BrandDarkGreen else GrayDetail
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (viewModel.multipleFilesMode == "SEPARADOS") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
+                                .clickable { viewModel.multipleFilesMode = "SEPARADOS" }
+                                .padding(14.dp)
+                                .testTag("multi_mode_separados"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.List,
+                                    contentDescription = null,
+                                    tint = if (viewModel.multipleFilesMode == "SEPARADOS") BrandGreen else GrayDetail,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = txt("Separados (N Reportes)"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (viewModel.multipleFilesMode == "SEPARADOS") BrandDarkGreen else GrayDetail
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -619,9 +707,10 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
 
         // Action process button
         item {
+            val hasSelected = viewModel.selectedVideoUris.isNotEmpty()
             Button(
                 onClick = {
-                    if (viewModel.selectedVideoUri == null) {
+                    if (viewModel.selectedVideoUris.isEmpty()) {
                         Toast.makeText(context, getTxt("Favor de seleccionar un video primero", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
                         return@Button
                     }
@@ -635,7 +724,7 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                     .testTag("process_video_button"),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BrandGreen),
-                enabled = viewModel.selectedVideoUri != null
+                enabled = hasSelected
             ) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1084,10 +1173,9 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
 
                         if (viewModel.isWhisperLocalDownloaded) {
                             // Model is ready
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Row(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1107,16 +1195,25 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                                     )
                                 }
                                 
-                                TextButton(
+                                OutlinedButton(
                                     onClick = {
                                         viewModel.deleteLocalWhisper {
                                             Toast.makeText(context, getTxt("Modelo local eliminado.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
                                         }
                                     },
-                                    colors = ButtonDefaults.textButtonColors(contentColor = Color.Red),
-                                    modifier = Modifier.testTag("delete_whisper_btn")
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFB3261E)),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB3261E)),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(44.dp)
+                                        .testTag("delete_whisper_btn")
                                 ) {
-                                    Text(txt("Eliminar Modelo"), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = txt("Eliminar Modelo"),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         } else {
@@ -1384,7 +1481,7 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("reset_defaults_btn"),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandGreen),
@@ -1406,12 +1503,18 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                     },
                     modifier = Modifier
                         .weight(1.5f)
-                        .height(48.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("save_settings_btn"),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = BrandGreen)
                 ) {
-                    Text(text = txt("Guardar Configuración"), fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color.White)
+                    Text(
+                        text = txt("Guardar Configuración"), 
+                        fontWeight = FontWeight.SemiBold, 
+                        fontSize = 13.sp, 
+                        color = Color.White,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
