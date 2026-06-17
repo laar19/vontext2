@@ -191,14 +191,27 @@ class MainActivity : ComponentActivity() {
 }
 
 // --- FILE SYSTEM ACCESS HELPERS ---
+fun getUriForFileResilient(context: Context, file: File): Uri {
+    val potentialAuthorities = listOf(
+        "${context.packageName}.fileprovider",
+        "com.aistudio.vontext.hzqypl.fileprovider",
+        "com.example.fileprovider"
+    )
+    var lastException: Exception? = null
+    for (authority in potentialAuthorities) {
+        try {
+            return androidx.core.content.FileProvider.getUriForFile(context, authority, file)
+        } catch (e: Exception) {
+            lastException = e
+        }
+    }
+    throw lastException ?: IllegalArgumentException("No se encontró un proveedor de archivos válido.")
+}
+
 fun shareFile(context: Context, filePath: String, mimeType: String) {
     try {
         val file = File(filePath)
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
+        val uri = getUriForFileResilient(context, file)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
@@ -213,11 +226,7 @@ fun shareFile(context: Context, filePath: String, mimeType: String) {
 fun openPdf(context: Context, filePath: String) {
     try {
         val file = File(filePath)
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
+        val uri = getUriForFileResilient(context, file)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/pdf")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -1481,11 +1490,12 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = 48.dp)
+                        .defaultMinSize(minHeight = 48.dp)
                         .testTag("reset_defaults_btn"),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandGreen),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, BrandGreen)
+                    border = androidx.compose.foundation.BorderStroke(1.dp, BrandGreen),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                 ) {
                     Text(text = txt("Restablecer"), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 }
@@ -1503,10 +1513,11 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                     },
                     modifier = Modifier
                         .weight(1.5f)
-                        .heightIn(min = 48.dp)
+                        .defaultMinSize(minHeight = 48.dp)
                         .testTag("save_settings_btn"),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = BrandGreen)
+                    colors = ButtonDefaults.buttonColors(containerColor = BrandGreen),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                 ) {
                     Text(
                         text = txt("Guardar Configuración"), 
