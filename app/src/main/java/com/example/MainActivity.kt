@@ -151,11 +151,13 @@ fun getTxt(key: String, lang: String): String {
             "Genera Contexto para Agentes de IA" -> "Generate AI Agent Context"
             "Procesa videos de grabación de pantalla para generar reportes PDF interactivos con capturas y transcripciones automatizadas." -> "Process screen recording videos to generate interactive PDF reports with captures and automated transcriptions."
             "¡Video Seleccionado!" -> "Video Selected!"
+            "Cancelar Procesamiento" -> "Cancel Processing"
             "Seleccionar Video" -> "Select Video"
             "Toca aquí para seleccionar un video del almacenamiento local" -> "Tap here to select a video from local storage"
-            "Modo de Transcripción Whisper" -> "Whisper Transcription Mode"
-            "Local" -> "Local"
-            "API Remota" -> "Remote API"
+            "Modo de Transcripción y Análisis" -> "Transcription & Analysis Mode"
+            "Local (Esp)" -> "Local (Sp)"
+            "Gemini API" -> "Gemini API"
+            "API Remote" -> "Remote API"
             "v2.1.1 • Listo" -> "v2.1.1 • Ready"
             "Seleccionar Videos" -> "Select Videos"
             "Toca aquí para seleccionar uno o varios videos del almacenamiento local" -> "Tap here to select one or multiple videos from local storage"
@@ -574,22 +576,23 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = txt("Modo de Transcripción Whisper"),
+                    text = txt("Modo de Transcripción y Análisis"),
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
                     color = GrayDetail
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // LOCAL
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(if (viewModel.whisperMode == "LOCAL") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
                             .clickable { viewModel.whisperMode = "LOCAL" }
-                            .padding(14.dp)
+                            .padding(10.dp)
                             .testTag("whisper_mode_local"),
                         contentAlignment = Alignment.Center
                     ) {
@@ -598,25 +601,58 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = null,
                                 tint = if (viewModel.whisperMode == "LOCAL") BrandGreen else GrayDetail,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = txt("Local"),
+                                text = txt("Local (Esp)"),
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = if (viewModel.whisperMode == "LOCAL") BrandDarkGreen else GrayDetail
+                                fontSize = 11.sp,
+                                color = if (viewModel.whisperMode == "LOCAL") BrandDarkGreen else GrayDetail,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
 
+                    // GEMINI (Recommended)
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (viewModel.whisperMode == "GEMINI") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
+                            .clickable { viewModel.whisperMode = "GEMINI" }
+                            .padding(10.dp)
+                            .testTag("whisper_mode_gemini"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = if (viewModel.whisperMode == "GEMINI") BrandGreen else GrayDetail,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = txt("Gemini API"),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = if (viewModel.whisperMode == "GEMINI") BrandDarkGreen else GrayDetail,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    // REMOTE (OpenAI/Groq)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
                             .background(if (viewModel.whisperMode == "REMOTE") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
                             .clickable { viewModel.whisperMode = "REMOTE" }
-                            .padding(14.dp)
+                            .padding(10.dp)
                             .testTag("whisper_mode_remote"),
                         contentAlignment = Alignment.Center
                     ) {
@@ -625,14 +661,16 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                                 imageVector = Icons.Default.Refresh,
                                 contentDescription = null,
                                 tint = if (viewModel.whisperMode == "REMOTE") BrandGreen else GrayDetail,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = txt("API Remota"),
+                                text = txt("API Remote"),
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = if (viewModel.whisperMode == "REMOTE") BrandDarkGreen else GrayDetail
+                                fontSize = 11.sp,
+                                color = if (viewModel.whisperMode == "REMOTE") BrandDarkGreen else GrayDetail,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -1765,6 +1803,33 @@ fun ProcessingOverlay(viewModel: VideoViewModel) {
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Button(
+                    onClick = { viewModel.cancelProcessing() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("cancel_processing_button"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFD32F2F),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Cancelar",
+                        modifier = Modifier.size(16.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = txt("Cancelar Procesamiento"),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
             }
         }
     }

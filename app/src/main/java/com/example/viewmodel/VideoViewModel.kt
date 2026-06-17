@@ -41,7 +41,7 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
 
     var additionalNotes by mutableStateOf("")
     var frameInterval by mutableStateOf(5) // default 5 seconds
-    var whisperMode by mutableStateOf("LOCAL") // "LOCAL" or "REMOTE"
+    var whisperMode by mutableStateOf("GEMINI") // "LOCAL", "GEMINI", or "REMOTE"
 
     var isDarkTheme by mutableStateOf(settingsRepository.getDarkThemeEnabled())
         private set
@@ -150,6 +150,16 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         logs.value = logs.value + "[$timestamp] $msg"
     }
 
+    private var activeProcessingJob: kotlinx.coroutines.Job? = null
+
+    fun cancelProcessing() {
+        activeProcessingJob?.cancel()
+        isProcessing = false
+        currentProgress = 0
+        currentStatusMessage = "Procesamiento cancelado."
+        addLog("Cancelado por el usuario.")
+    }
+
     fun startProcessing(onComplete: (String) -> Unit) {
         if (selectedVideoUris.isEmpty()) return
         isProcessing = true
@@ -158,7 +168,7 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         logs.value = emptyList()
         addLog("Iniciando proceso de Vontext...")
 
-        viewModelScope.launch {
+        activeProcessingJob = viewModelScope.launch {
             try {
                 val model = settingsRepository.getModel()
                 if (selectedVideoUris.size == 1) {

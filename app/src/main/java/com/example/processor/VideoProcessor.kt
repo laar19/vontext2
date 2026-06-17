@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -15,13 +16,16 @@ import com.example.data.Job
 import com.example.data.JobRepository
 import com.example.data.SettingsRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -132,6 +136,7 @@ class VideoProcessor(
 
                 // Perform frame extraction
                 stepTimesMs.forEachIndexed { index, timeMs ->
+                    coroutineContext.ensureActive()
                     val progressPercent = 20 + ((index.toFloat() / stepTimesMs.size) * 30).toInt()
                     onProgressUpdate(progressPercent, "Extrayendo frame ${index + 1} de ${stepTimesMs.size}...")
 
@@ -169,10 +174,28 @@ class VideoProcessor(
                 retriever.release()
 
                 // 4. Transcription Stage
-                onProgressUpdate(55, "Iniciando transcripción de audio...")
+                onProgressUpdate(55, "Iniciando transcripción y análisis...")
                 var transcriptionText = ""
 
-                if (hasAudio) {
+                if (whisperMode == "GEMINI") {
+                    onProgressUpdate(60, "Analizando capturas con Gemini API de la plataforma...")
+                    val geminiKey = if (com.example.BuildConfig.GEMINI_API_KEY.startsWith("AIza")) {
+                        com.example.BuildConfig.GEMINI_API_KEY
+                    } else {
+                        settingsRepository.getApiKey()
+                    }
+                    if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
+                        transcriptionText = "[Error: API key de Gemini no disponible. Fallback a estimado]\n" +
+                                generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    } else {
+                        try {
+                            transcriptionText = executeGeminiMultimodal(extractedFrames, notes, geminiKey)
+                        } catch (e: Exception) {
+                            transcriptionText = "[Error en Gemini API: ${e.message}. Fallback a estimado]\n" +
+                                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        }
+                    }
+                } else if (hasAudio) {
                     if (whisperMode == "REMOTE") {
                         val apiKey = settingsRepository.getApiKey()
                         if (apiKey.isEmpty()) {
@@ -207,6 +230,14 @@ class VideoProcessor(
                 val pdfFile = File(outputDir, "Reporte_Vontext_${jobId.take(6)}.pdf")
                 generatePdf(pdfFile, notes, durationSec, extractedFrames, transcriptionText)
 
+                // Save plain text transcription as requested by the user
+                try {
+                    val txtFile = File(outputDir, "transcripcion.txt")
+                    txtFile.writeText(transcriptionText)
+                } catch (e: Exception) {
+                    // Ignore or fallback
+                }
+
                 // 6. Create ZIP Archive
                 onProgressUpdate(90, "Empaquetando todo en ZIP...")
                 val zipFile = File(outputDir.parent, "Vontext_${jobId.take(6)}.zip")
@@ -235,6 +266,30 @@ class VideoProcessor(
                 )
                 jobRepository.insertJob(completedJob)
 
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                onProgressUpdate(100, "Procesamiento cancelado por el usuario.")
+                val cancelledJob = Job(
+                    jobId = jobId,
+                    status = "FAILED",
+                    videoPath = "",
+                    videoFilename = "",
+                    hasAudio = false,
+                    videoDuration = 0f,
+                    additionalNotes = notes,
+                    progress = 0,
+                    progressMessage = "Cancelado por el usuario",
+                    errorMessage = "Procesamiento cancelado por el usuario",
+                    createdAt = createdAt,
+                    completedAt = System.currentTimeMillis(),
+                    pdfPath = null,
+                    zipPath = null,
+                    frameInterval = frameInterval,
+                    whisperMode = whisperMode
+                )
+                try {
+                    jobRepository.insertJob(cancelledJob)
+                } catch (dbEx: Exception) {}
+                throw e
             } catch (e: Exception) {
                 // Handle failure
                 onProgressUpdate(100, "Error: ${e.message}")
@@ -319,6 +374,7 @@ class VideoProcessor(
                 var firstVideoPath = ""
 
                 videoUris.forEachIndexed { index, videoUri ->
+                    coroutineContext.ensureActive()
                     val videoIndexLabel = "Video ${index + 1} de ${videoUris.size}"
                     onProgressUpdate(10 + (index * 80 / videoUris.size), "Procesando $videoIndexLabel: copiando archivo...")
 
@@ -378,6 +434,7 @@ class VideoProcessor(
                     // Extract frames
                     val currentVideoExtractedFrames = mutableListOf<FrameInfo>()
                     stepTimesMs.forEachIndexed { frameIdx, timeMs ->
+                        coroutineContext.ensureActive()
                         val bitmap = try {
                             retriever.getFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                                 ?: retriever.getFrameAtTime(timeMs * 1000)
@@ -416,7 +473,24 @@ class VideoProcessor(
 
                     // Transcription of this video
                     var videoTranscription = ""
-                    if (hasAudio) {
+                    if (whisperMode == "GEMINI") {
+                        val geminiKey = if (com.example.BuildConfig.GEMINI_API_KEY.startsWith("AIza")) {
+                            com.example.BuildConfig.GEMINI_API_KEY
+                        } else {
+                            settingsRepository.getApiKey()
+                        }
+                        if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
+                            videoTranscription = "[Error: API key de Gemini no disponible. Fallback a estimado]\n" +
+                                    generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
+                        } else {
+                            try {
+                                videoTranscription = executeGeminiMultimodal(currentVideoExtractedFrames, notes, geminiKey)
+                            } catch (e: Exception) {
+                                videoTranscription = "[Error en Gemini API: ${e.message}. Fallback a estimado]\n" +
+                                        generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
+                            }
+                        }
+                    } else if (hasAudio) {
                         if (whisperMode == "REMOTE") {
                             val apiKey = settingsRepository.getApiKey()
                             if (apiKey.isEmpty()) {
@@ -451,6 +525,14 @@ class VideoProcessor(
                 val pdfFile = File(outputDir, "Reporte_Consolidado_Vontext_${jobId.take(6)}.pdf")
                 generatePdf(pdfFile, notes, totalDurationSec, consolidatedExtractedFrames, sbTranscription.toString())
 
+                // Save plain text transcription as requested by the user
+                try {
+                    val txtFile = File(outputDir, "transcripcion.txt")
+                    txtFile.writeText(sbTranscription.toString())
+                } catch (e: Exception) {
+                    // Ignore or fallback
+                }
+
                 val zipFile = File(outputDir.parent, "Reporte_Consolidado_Vontext_${jobId.take(6)}.zip")
                 createZip(outputDir, zipFile)
 
@@ -477,6 +559,30 @@ class VideoProcessor(
                 )
                 jobRepository.insertJob(completedJob)
 
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                onProgressUpdate(100, "Procesamiento cancelado por el usuario.")
+                val cancelledJob = Job(
+                    jobId = jobId,
+                    status = "FAILED",
+                    videoPath = "",
+                    videoFilename = videoUris.joinToString(", ") { it.lastPathSegment ?: "video.mp4" },
+                    hasAudio = false,
+                    videoDuration = 0f,
+                    additionalNotes = notes,
+                    progress = 0,
+                    progressMessage = "Cancelado por el usuario",
+                    errorMessage = "Procesamiento cancelado por el usuario",
+                    createdAt = createdAt,
+                    completedAt = System.currentTimeMillis(),
+                    pdfPath = null,
+                    zipPath = null,
+                    frameInterval = frameInterval,
+                    whisperMode = whisperMode
+                )
+                try {
+                    jobRepository.insertJob(cancelledJob)
+                } catch (dbEx: Exception) {}
+                throw e
             } catch (e: Exception) {
                 onProgressUpdate(100, "Error: ${e.message}")
                 val failedJob = Job(
@@ -522,6 +628,95 @@ class VideoProcessor(
         sb.append("[$footerTime] [Fin] Finalización del proceso de captura de pantalla.")
 
         return sb.toString()
+    }
+
+    private fun getCompressedBase64Frame(path: String): String {
+        val bitmap = BitmapFactory.decodeFile(path) ?: return ""
+        val maxDim = 512
+        val scaled = if (bitmap.width > maxDim || bitmap.height > maxDim) {
+            val ratio = Math.min(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
+            Bitmap.createScaledBitmap(bitmap, (bitmap.width * ratio).toInt(), (bitmap.height * ratio).toInt(), true)
+        } else {
+            bitmap
+        }
+        val baos = java.io.ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, 60, baos)
+        val byteArray = baos.toByteArray()
+        if (scaled != bitmap) {
+            scaled.recycle()
+        }
+        bitmap.recycle()
+        return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
+    }
+
+    private fun executeGeminiMultimodal(frames: List<FrameInfo>, notes: String?, apiKey: String): String {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+
+        val jsonRequest = JSONObject()
+        val contentsArray = JSONArray()
+        val contentObj = JSONObject()
+        val partsArray = JSONArray()
+
+        val systemPrompt = "Eres un asistente técnico experto en análisis de pantallas de dispositivos móviles/web. " +
+                "Se te proporciona una secuencia cronológica de capturas de pantalla de un video (${frames.size} capturas en total) y notas adicionales del usuario: '${notes ?: "Ninguna"}'. " +
+                "Tu objetivo es generar el reporte de transcripción contextual en español más exacto y descriptivo posible. " +
+                "Genera un reporte líneal de navegación de actividad en formato de línea de tiempo con marcas de tiempo en formato [mm:ss] que correspondan exactamente a los tiempos de las capturas que se te pasan. " +
+                "Para cada tiempo, escribe exactamente una frase/oración muy concisa (menos de 100 caracteres) que describa la interfaz mostrada, la acción técnica detectada en la imagen o el paso del usuario. " +
+                "Usa únicamente formato del estilo: '[00:05] Se muestra el menú principal y el formulario de inicio.' " +
+                "Sé sumamente profesional e inteligente basándote en la información visual real de las capturas de pantalla, evitando frases genéricas."
+
+        partsArray.put(JSONObject().apply { put("text", systemPrompt) })
+
+        frames.forEach { frame ->
+            val totalSec = frame.timestampMs / 1000
+            val min = totalSec / 60
+            val sec = totalSec % 60
+            val timeStr = String.format("%02d:%02d", min, sec)
+
+            val base64Data = getCompressedBase64Frame(frame.path)
+            if (base64Data.isNotEmpty()) {
+                partsArray.put(JSONObject().apply {
+                    put("text", "Captura del Frame ${frame.frameNum} en el tiempo [$timeStr]:")
+                })
+                partsArray.put(JSONObject().apply {
+                    val inlineDataObj = JSONObject().apply {
+                        put("mimeType", "image/jpeg")
+                        put("data", base64Data)
+                    }
+                    put("inlineData", inlineDataObj)
+                })
+            }
+        }
+
+        contentObj.put("parts", partsArray)
+        contentsArray.put(contentObj)
+        jsonRequest.put("contents", contentsArray)
+
+        val requestBody = jsonRequest.toString().toRequestBody("application/json".toMediaTypeOrNull())
+
+        val request = Request.Builder()
+            .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey")
+            .post(requestBody)
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val errBody = response.body?.string() ?: ""
+                throw Exception("HTTP ${response.code}: $errBody")
+            }
+            val responseBody = response.body?.string() ?: throw Exception("Respuesta vacía de Gemini")
+            val json = JSONObject(responseBody)
+            val candidates = json.optJSONArray("candidates")
+            val firstCandidate = candidates?.optJSONObject(0)
+            val content = firstCandidate?.optJSONObject("content")
+            val parts = content?.optJSONArray("parts")
+            val firstPart = parts?.optJSONObject(0)
+            return firstPart?.optString("text") ?: throw Exception("No se encontró texto en la respuesta de Gemini")
+        }
     }
 
     private fun executeRemoteWhisper(videoFile: File, apiKey: String, baseUrl: String, model: String): String {
@@ -578,23 +773,27 @@ class VideoProcessor(
             textSize = 20f
             isFakeBoldText = true
             isAntiAlias = true
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
         val headerPaint = Paint().apply {
             color = Color.rgb(44, 62, 80)
             textSize = 12f
             isFakeBoldText = true
             isAntiAlias = true
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
         val textPaint = Paint().apply {
             color = Color.BLACK
             textSize = 10f
             isAntiAlias = true
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
         }
         val boldTextPaint = Paint().apply {
             color = Color.BLACK
             textSize = 10f
             isFakeBoldText = true
             isAntiAlias = true
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
 
         // --- PAGE 1: TITLE & METADATA ---
@@ -746,7 +945,12 @@ class VideoProcessor(
         ZipOutputStream(FileOutputStream(destZipFile)).use { zos ->
             srcFolder.walkTopDown().forEach { file ->
                 if (file.isFile) {
-                    val zipEntry = ZipEntry(file.name)
+                    val zipEntryPath = if (file.name.endsWith(".jpg", ignoreCase = true)) {
+                        "capturas/${file.name}"
+                    } else {
+                        file.name
+                    }
+                    val zipEntry = ZipEntry(zipEntryPath)
                     zos.putNextEntry(zipEntry)
                     file.inputStream().use { input ->
                         input.copyTo(zos)
