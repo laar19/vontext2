@@ -41,7 +41,67 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
 
     var additionalNotes by mutableStateOf("")
     var frameInterval by mutableStateOf(5) // default 5 seconds
-    var whisperMode by mutableStateOf("GEMINI") // "LOCAL", "GEMINI", or "REMOTE"
+    
+    var whisperMode by mutableStateOf(settingsRepository.getSelectedModelId())
+        private set
+
+    init {
+        val stored = settingsRepository.getSelectedModelId()
+        if (stored == "GEMINI") {
+            val buildConfigKey = com.example.BuildConfig.GEMINI_API_KEY
+            val isBuildConfigValid = buildConfigKey.isNotBlank() && buildConfigKey != "MY_GEMINI_API_KEY" && buildConfigKey.length > 10
+            val isConfigured = isBuildConfigValid || settingsRepository.getApiKey().isNotEmpty()
+            if (!isConfigured) {
+                updateWhisperMode("LOCAL")
+            }
+        } else if (stored == "REMOTE") {
+            if (settingsRepository.getApiKey().isEmpty()) {
+                updateWhisperMode("LOCAL")
+            }
+        }
+    }
+
+    fun updateWhisperMode(value: String) {
+        settingsRepository.setSelectedModelId(value)
+        whisperMode = value
+    }
+
+    var customModelsList by mutableStateOf(settingsRepository.getCustomModels())
+        private set
+
+    var includeTimestamps by mutableStateOf(settingsRepository.getIncludeTimestamps())
+        private set
+
+    fun updateIncludeTimestamps(newValue: Boolean) {
+        settingsRepository.setIncludeTimestamps(newValue)
+        includeTimestamps = newValue
+    }
+
+    fun loadCustomModels() {
+        customModelsList = settingsRepository.getCustomModels()
+    }
+
+    fun addCustomModel(configName: String, type: String, apiKey: String, endpoint: String, modelName: String) {
+        val model = com.example.data.CustomModel(
+            id = java.util.UUID.randomUUID().toString(),
+            name = configName,
+            type = type,
+            apiKey = apiKey,
+            endpoint = endpoint,
+            modelName = modelName
+        )
+        settingsRepository.addCustomModel(model)
+        loadCustomModels()
+        updateWhisperMode(model.id)
+    }
+
+    fun deleteCustomModel(id: String) {
+        settingsRepository.deleteCustomModel(id)
+        loadCustomModels()
+        if (whisperMode == id) {
+            updateWhisperMode("LOCAL")
+        }
+    }
 
     var isDarkTheme by mutableStateOf(settingsRepository.getDarkThemeEnabled())
         private set

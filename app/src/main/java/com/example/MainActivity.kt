@@ -82,7 +82,7 @@ fun txt(key: String): String {
 fun getTxt(key: String, lang: String): String {
     return when (lang) {
         "en" -> when (key) {
-            "v2.1.1 • Listo" -> "v2.1.1 • Ready"
+            "v2.1.1" -> "v2.1.1"
             "Inicio" -> "Home"
             "Historial" -> "History"
             "Ajustes" -> "Settings"
@@ -158,7 +158,7 @@ fun getTxt(key: String, lang: String): String {
             "Local (Esp)" -> "Local (Sp)"
             "Gemini API" -> "Gemini API"
             "API Remote" -> "Remote API"
-            "v2.1.1 • Listo" -> "v2.1.1 • Ready"
+            "v2.1.1" -> "v2.1.1"
             "Seleccionar Videos" -> "Select Videos"
             "Toca aquí para seleccionar uno o varios videos del almacenamiento local" -> "Tap here to select one or multiple videos from local storage"
             "Agrupamiento de Reportes" -> "Report Grouping"
@@ -364,7 +364,7 @@ fun HeaderBlock() {
                     )
                 )
                 Text(
-                    text = txt("v2.1.1 • Listo"),
+                    text = txt("v2.1.1"),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 1.sp,
@@ -574,106 +574,241 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
 
         // Whisper Mode selector card
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                     text = txt("Modo de Transcripción y Análisis"),
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
                     color = GrayDetail
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = WarmWhite),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SoftGrayBorder)
                 ) {
-                    // LOCAL
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (viewModel.whisperMode == "LOCAL") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
-                            .clickable { viewModel.whisperMode = "LOCAL" }
-                            .padding(10.dp)
-                            .testTag("whisper_mode_local"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = if (viewModel.whisperMode == "LOCAL") BrandGreen else GrayDetail,
-                                modifier = Modifier.size(18.dp)
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 1. Whisper Local option
+                        val isLocal = viewModel.whisperMode == "LOCAL"
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isLocal) LightSage.copy(alpha = 0.5f) else Color.Transparent)
+                                .clickable { viewModel.updateWhisperMode("LOCAL") }
+                                .padding(vertical = 4.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isLocal,
+                                onClick = { viewModel.updateWhisperMode("LOCAL") },
+                                colors = RadioButtonDefaults.colors(selectedColor = BrandGreen),
+                                modifier = Modifier.testTag("whisper_mode_local_radio")
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = txt("Local (Esp)"),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = if (viewModel.whisperMode == "LOCAL") BrandDarkGreen else GrayDetail,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = txt("Whisper Local (Offline)"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = CharcoalText
+                                )
+                                Text(
+                                    text = if (viewModel.isWhisperLocalDownloaded) txt("Listo para usar offline (96 MB)") else txt("Requiere descarga para uso local"),
+                                    fontSize = 12.sp,
+                                    color = MutedGray
+                                )
+                            }
 
-                    // GEMINI (Recommended)
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (viewModel.whisperMode == "GEMINI") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
-                            .clickable { viewModel.whisperMode = "GEMINI" }
-                            .padding(10.dp)
-                            .testTag("whisper_mode_gemini"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.Star,
-                                contentDescription = null,
-                                tint = if (viewModel.whisperMode == "GEMINI") BrandGreen else GrayDetail,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = txt("Gemini API"),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = if (viewModel.whisperMode == "GEMINI") BrandDarkGreen else GrayDetail,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            if (!viewModel.isWhisperLocalDownloaded) {
+                                if (viewModel.isDownloadingLocalWhisper) {
+                                    Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator(
+                                            progress = { viewModel.localWhisperDownloadProgress },
+                                            strokeWidth = 2.dp,
+                                            color = BrandGreen,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                } else {
+                                    val contextForToast = LocalContext.current
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.downloadLocalWhisper(
+                                                onSuccess = {
+                                                    Toast.makeText(contextForToast, getTxt("Modelo descargado con éxito.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
+                                                },
+                                                onError = { err ->
+                                                    Toast.makeText(contextForToast, err, Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("download_whisper_inline")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Descargar Whisper Local",
+                                            tint = BrandGreen
+                                        )
+                                    }
+                                }
+                            }
                         }
-                    }
 
-                    // REMOTE (OpenAI/Groq)
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (viewModel.whisperMode == "REMOTE") LightSage else SoftGrayBorder.copy(alpha = 0.5f))
-                            .clickable { viewModel.whisperMode = "REMOTE" }
-                            .padding(10.dp)
-                            .testTag("whisper_mode_remote"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = null,
-                                tint = if (viewModel.whisperMode == "REMOTE") BrandGreen else GrayDetail,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = txt("API Remote"),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = if (viewModel.whisperMode == "REMOTE") BrandDarkGreen else GrayDetail,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        // 2. Pre-configured Gemini API (Conditional show)
+                        val isGeminiConfigured = run {
+                            val buildConfigKey = com.example.BuildConfig.GEMINI_API_KEY
+                            val isBuildConfigValid = buildConfigKey.isNotBlank() && buildConfigKey != "MY_GEMINI_API_KEY" && buildConfigKey.length > 10
+                            isBuildConfigValid || viewModel.settingsRepository.getApiKey().isNotEmpty()
+                        }
+                        if (isGeminiConfigured) {
+                            val isGemini = viewModel.whisperMode == "GEMINI"
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isGemini) LightSage.copy(alpha = 0.5f) else Color.Transparent)
+                                    .clickable { viewModel.updateWhisperMode("GEMINI") }
+                                    .padding(vertical = 4.dp, horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isGemini,
+                                    onClick = { viewModel.updateWhisperMode("GEMINI") },
+                                    colors = RadioButtonDefaults.colors(selectedColor = BrandGreen),
+                                    modifier = Modifier.testTag("whisper_mode_gemini_radio")
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = txt("Gemini API (Plataforma)"),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = CharcoalText
+                                    )
+                                    Text(
+                                        text = txt("Multimodal y rápido (gemini-3.5-flash)"),
+                                        fontSize = 12.sp,
+                                        color = MutedGray
+                                    )
+                                }
+                            }
+                        }
+
+                        // 3. Pre-configured Remote Whisper (Conditional show)
+                        val isRemoteConfigured = viewModel.settingsRepository.getApiKey().isNotEmpty()
+                        if (isRemoteConfigured) {
+                            val isRemote = viewModel.whisperMode == "REMOTE"
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isRemote) LightSage.copy(alpha = 0.5f) else Color.Transparent)
+                                    .clickable { viewModel.updateWhisperMode("REMOTE") }
+                                    .padding(vertical = 4.dp, horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isRemote,
+                                    onClick = { viewModel.updateWhisperMode("REMOTE") },
+                                    colors = RadioButtonDefaults.colors(selectedColor = BrandGreen),
+                                    modifier = Modifier.testTag("whisper_mode_remote_radio")
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = txt("Whisper Remoto (Estándar)"),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = CharcoalText
+                                    )
+                                    Text(
+                                        text = txt("Vía Endpoint configurado en ajustes"),
+                                        fontSize = 12.sp,
+                                        color = MutedGray
+                                    )
+                                }
+                            }
+                        }
+
+                        // 4. Dynamic custom configurations
+                        viewModel.customModelsList.forEach { customModel ->
+                            val isCustomSel = viewModel.whisperMode == customModel.id
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isCustomSel) LightSage.copy(alpha = 0.5f) else Color.Transparent)
+                                    .clickable { viewModel.updateWhisperMode(customModel.id) }
+                                    .padding(vertical = 4.dp, horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isCustomSel,
+                                    onClick = { viewModel.updateWhisperMode(customModel.id) },
+                                    colors = RadioButtonDefaults.colors(selectedColor = BrandGreen),
+                                    modifier = Modifier.testTag("whisper_mode_custom_${customModel.id}")
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = customModel.name,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = CharcoalText
+                                    )
+                                    Text(
+                                        text = "${if (customModel.type == "GEMINI") "Gemini API" else "Ajuste OpenAI"} - ${customModel.modelName}",
+                                        fontSize = 12.sp,
+                                        color = MutedGray
+                                    )
+                                }
+                            }
                         }
                     }
+                }
+            }
+        }
+
+        // Include timestamps toggle item
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = WarmWhite),
+                border = androidx.compose.foundation.BorderStroke(1.dp, SoftGrayBorder)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.updateIncludeTimestamps(!viewModel.includeTimestamps) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1.5f)) {
+                        Text(
+                            text = txt("Incluir marcas de tiempo (Timestamps)"),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = CharcoalText
+                        )
+                        Text(
+                            text = txt("Mostrar marcas [mm:ss] al lado de la transcripción en el PDF"),
+                            fontSize = 11.sp,
+                            color = MutedGray
+                        )
+                    }
+                    Switch(
+                        checked = viewModel.includeTimestamps,
+                        onCheckedChange = { viewModel.updateIncludeTimestamps(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = BrandGreen,
+                            uncheckedThumbColor = GrayDetail,
+                            uncheckedTrackColor = SoftGrayBorder
+                        ),
+                        modifier = Modifier.testTag("include_timestamps_switch")
+                    )
                 }
             }
         }
@@ -1136,8 +1271,15 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
             )
         }
 
-        // API settings
+        // Card to Add custom list of models
         item {
+            var newModelName by remember { mutableStateOf("") }
+            var newModelType by remember { mutableStateOf("GEMINI") } // "GEMINI" or "OPENAI_COMPATIBLE"
+            var newModelApiKey by remember { mutableStateOf("") }
+            var newModelEndpoint by remember { mutableStateOf("https://generativelanguage.googleapis.com") }
+            var newModelNameCode by remember { mutableStateOf("gemini-3.5-flash") }
+            var isDropdownExpanded by remember { mutableStateOf(false) }
+
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = WarmWhite),
@@ -1145,47 +1287,161 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
             ) {
                 Column(
                     modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // API Key
+                    Text(
+                        text = txt("Agregar Nuevo Modelo o API"),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = BrandDarkGreen
+                    )
+
+                    // 1. Dropdown for API selection
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(txt("API Key de Whisper (OpenAI / Groq)"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
+                        Text(txt("Tipo de API"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.Transparent)
+                                .clickable { isDropdownExpanded = true }
+                        ) {
+                            OutlinedTextField(
+                                value = if (newModelType == "GEMINI") "Gemini API" else "OpenAI Compatible",
+                                onValueChange = {},
+                                readOnly = true,
+                                trailingIcon = {
+                                    IconButton(onClick = { isDropdownExpanded = true }) {
+                                        Icon(imageVector = Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("custom_model_type_field"),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            DropdownMenu(
+                                expanded = isDropdownExpanded,
+                                onDismissRequest = { isDropdownExpanded = false },
+                                modifier = Modifier.fillMaxWidth(0.8f).background(WarmWhite)
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Gemini API") },
+                                    onClick = {
+                                        newModelType = "GEMINI"
+                                        if (newModelEndpoint.isEmpty() || newModelEndpoint.contains("api.openai.com")) {
+                                            newModelEndpoint = "https://generativelanguage.googleapis.com"
+                                        }
+                                        if (newModelNameCode.isEmpty() || newModelNameCode.contains("whisper")) {
+                                            newModelNameCode = "gemini-3.5-flash"
+                                        }
+                                        isDropdownExpanded = false
+                                    },
+                                    modifier = Modifier.testTag("dropdown_type_gemini")
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("OpenAI Compatible (Groq, Whisper, etc.)") },
+                                    onClick = {
+                                        newModelType = "OPENAI_COMPATIBLE"
+                                        if (newModelEndpoint.isEmpty() || newModelEndpoint.contains("generativelanguage")) {
+                                            newModelEndpoint = "https://api.openai.com/v1"
+                                        }
+                                        if (newModelNameCode.isEmpty() || newModelNameCode.contains("gemini")) {
+                                            newModelNameCode = "whisper-1"
+                                        }
+                                        isDropdownExpanded = false
+                                    },
+                                    modifier = Modifier.testTag("dropdown_type_openai")
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. Custom Config Name
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(txt("Nombre de Configuración"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
                         OutlinedTextField(
-                            value = apiKey,
-                            onValueChange = {
-                                apiKey = it
-                            },
-                            placeholder = { Text("sk-...") },
-                            modifier = Modifier.fillMaxWidth().testTag("api_key_input"),
+                            value = newModelName,
+                            onValueChange = { newModelName = it },
+                            placeholder = { Text("Ej. Mi Gemini Pro o Groq Whisper") },
+                            modifier = Modifier.fillMaxWidth().testTag("custom_config_name_input"),
                             shape = RoundedCornerShape(12.dp)
                         )
                     }
 
-                    // Base url endpoint
+                    // 3. API Key
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(txt("API Key"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
+                        OutlinedTextField(
+                            value = newModelApiKey,
+                            onValueChange = { newModelApiKey = it },
+                            placeholder = { Text("sk-...") },
+                            modifier = Modifier.fillMaxWidth().testTag("custom_config_key_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    // 4. Endpoint URL
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(txt("Endpoint URL"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
                         OutlinedTextField(
-                            value = endpoint,
-                            onValueChange = {
-                                endpoint = it
-                            },
-                            placeholder = { Text("https://api.openai.com/v1") },
-                            modifier = Modifier.fillMaxWidth().testTag("endpoint_input"),
+                            value = newModelEndpoint,
+                            onValueChange = { newModelEndpoint = it },
+                            placeholder = { Text(if (newModelType == "GEMINI") "https://generativelanguage.googleapis.com" else "https://api.openai.com/v1") },
+                            modifier = Modifier.fillMaxWidth().testTag("custom_config_endpoint_input"),
                             shape = RoundedCornerShape(12.dp)
                         )
                     }
 
-                    // Whisper Model Type
+                    // 5. Model Code Name
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(txt("Modelo Whisper Remoto"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
+                        Text(txt("Nombre del modelo"), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = CharcoalText)
                         OutlinedTextField(
-                            value = model,
-                            onValueChange = {
-                                model = it
-                            },
-                            placeholder = { Text("whisper-1") },
-                            modifier = Modifier.fillMaxWidth().testTag("model_input"),
+                            value = newModelNameCode,
+                            onValueChange = { newModelNameCode = it },
+                            placeholder = { Text(if (newModelType == "GEMINI") "gemini-3.5-flash" else "whisper-1") },
+                            modifier = Modifier.fillMaxWidth().testTag("custom_config_model_name_input"),
                             shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    // 6. Action button to add
+                    val context = LocalContext.current
+                    Button(
+                        onClick = {
+                            if (newModelName.isBlank()) {
+                                Toast.makeText(context, getTxt("Ingresa un nombre para la configuración.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.addCustomModel(
+                                    configName = newModelName,
+                                    type = newModelType,
+                                    apiKey = newModelApiKey,
+                                    endpoint = newModelEndpoint,
+                                    modelName = newModelNameCode
+                                )
+                                Toast.makeText(context, getTxt("Modelo agregado correctamente.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
+                                // Clear inputs
+                                newModelName = ""
+                                newModelApiKey = ""
+                                if (newModelType == "GEMINI") {
+                                    newModelEndpoint = "https://generativelanguage.googleapis.com"
+                                    newModelNameCode = "gemini-3.5-flash"
+                                } else {
+                                    newModelEndpoint = "https://api.openai.com/v1"
+                                    newModelNameCode = "whisper-1"
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .testTag("add_custom_model_btn"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = BrandGreen)
+                    ) {
+                        Text(
+                            text = txt("Agregar Modelo"),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
                 }
@@ -1330,6 +1586,77 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
             }
         }
 
+        // --- CUSTOM MODELS SECTION ---
+        item {
+            Text(
+                text = txt("Modelos y APIs Personalizados"),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = GrayDetail
+            )
+        }
+
+        // Custom models list (with delete buttons)
+        item {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = WarmWhite),
+                border = androidx.compose.foundation.BorderStroke(1.dp, SoftGrayBorder)
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (viewModel.customModelsList.isEmpty()) {
+                        Text(
+                            text = txt("No has agregado ningún modelo personalizado todavía."),
+                            fontSize = 13.sp,
+                            color = MutedGray
+                        )
+                    } else {
+                        viewModel.customModelsList.forEach { customModel ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = customModel.name,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = CharcoalText
+                                    )
+                                    Text(
+                                        text = "${if (customModel.type == "GEMINI") "Gemini API" else "Ajuste OpenAI"} - ${customModel.modelName}",
+                                        fontSize = 12.sp,
+                                        color = MutedGray
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { viewModel.deleteCustomModel(customModel.id) },
+                                    modifier = Modifier.testTag("delete_custom_model_${customModel.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Eliminar Modelo",
+                                        tint = Color(0xFFB3261E)
+                                    )
+                                }
+                            }
+                            if (customModel != viewModel.customModelsList.last()) {
+                                Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder.copy(alpha = 0.5f)))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+
         // Interface Preferences Card
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1438,6 +1765,43 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                                     )
                                 }
                             }
+                        }
+
+                        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder))
+
+                        // Timestamps Switch preference
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.updateIncludeTimestamps(!viewModel.includeTimestamps) },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1.5f)) {
+                                Text(
+                                    text = txt("Incluir marcas de tiempo (Timestamps) en el PDF"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = CharcoalText
+                                )
+                                Text(
+                                    text = txt("Muestra las etiquetas de minutos y segundos al lado de las transcripciones."),
+                                    fontSize = 11.sp,
+                                    color = MutedGray,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                            Switch(
+                                checked = viewModel.includeTimestamps,
+                                onCheckedChange = { viewModel.updateIncludeTimestamps(it) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = BrandGreen,
+                                    uncheckedThumbColor = GrayDetail,
+                                    uncheckedTrackColor = SoftGrayBorder
+                                ),
+                                modifier = Modifier.testTag("include_timestamps_settings_switch")
+                            )
                         }
                     }
                 }

@@ -175,60 +175,20 @@ class VideoProcessor(
 
                 // 4. Transcription Stage
                 onProgressUpdate(55, "Iniciando transcripción y análisis...")
-                var transcriptionText = ""
-
-                if (whisperMode == "GEMINI") {
-                    onProgressUpdate(60, "Analizando capturas con Gemini API de la plataforma...")
-                    val geminiKey = if (com.example.BuildConfig.GEMINI_API_KEY.startsWith("AIza")) {
-                        com.example.BuildConfig.GEMINI_API_KEY
-                    } else {
-                        settingsRepository.getApiKey()
-                    }
-                    if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
-                        transcriptionText = "[Error: API key de Gemini no disponible. Fallback a estimado]\n" +
-                                generateFallbackTranscript(notes, durationSec, extractedFrames)
-                    } else {
-                        try {
-                            transcriptionText = executeGeminiMultimodal(extractedFrames, notes, geminiKey)
-                        } catch (e: Exception) {
-                            transcriptionText = "[Error en Gemini API: ${e.message}. Fallback a estimado]\n" +
-                                    generateFallbackTranscript(notes, durationSec, extractedFrames)
-                        }
-                    }
-                } else if (hasAudio) {
-                    if (whisperMode == "REMOTE") {
-                        val apiKey = settingsRepository.getApiKey()
-                        if (apiKey.isEmpty()) {
-                            transcriptionText = "[Error: API key no configurada en Ajustes. Utilizando transcripción local estimada]\n" +
-                                    generateFallbackTranscript(notes, durationSec, extractedFrames)
-                        } else {
-                            try {
-                                onProgressUpdate(60, "Transcribiendo vía API remota...")
-                                transcriptionText = executeRemoteWhisper(
-                                    tempVideoFile,
-                                    apiKey,
-                                    settingsRepository.getEndpoint(),
-                                    settingsRepository.getModel()
-                                )
-                            } catch (e: Exception) {
-                                transcriptionText = "[Error en API remota: ${e.message}. Fallback a transcripción estimativa]\n" +
-                                        generateFallbackTranscript(notes, durationSec, extractedFrames)
-                            }
-                        }
-                    } else {
-                        // LOCAL MODE - Generate simulated context-aware transcript
-                        onProgressUpdate(60, "Procesando transcripción con Whisper Local (Estimado)...")
-                        transcriptionText = generateFallbackTranscript(notes, durationSec, extractedFrames)
-                        Thread.sleep(1200) // simulated offline processing
-                    }
-                } else {
-                    transcriptionText = "El video no contiene pistas de audio para transcribir."
-                }
+                val transcriptionText = performTranscription(
+                    whisperMode = whisperMode,
+                    tempVideoFile = tempVideoFile,
+                    notes = notes,
+                    durationSec = durationSec,
+                    extractedFrames = extractedFrames,
+                    hasAudio = hasAudio,
+                    onProgressUpdate = onProgressUpdate
+                )
 
                 // 5. Generate PDF Report
                 onProgressUpdate(75, "Generando reporte PDF con transcripciones...")
                 val pdfFile = File(outputDir, "Reporte_Vontext_${jobId.take(6)}.pdf")
-                generatePdf(pdfFile, notes, durationSec, extractedFrames, transcriptionText)
+                generatePdf(pdfFile, notes, durationSec, extractedFrames, transcriptionText, whisperMode)
 
                 // Save plain text transcription as requested by the user
                 try {
@@ -472,49 +432,15 @@ class VideoProcessor(
                     retriever.release()
 
                     // Transcription of this video
-                    var videoTranscription = ""
-                    if (whisperMode == "GEMINI") {
-                        val geminiKey = if (com.example.BuildConfig.GEMINI_API_KEY.startsWith("AIza")) {
-                            com.example.BuildConfig.GEMINI_API_KEY
-                        } else {
-                            settingsRepository.getApiKey()
-                        }
-                        if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
-                            videoTranscription = "[Error: API key de Gemini no disponible. Fallback a estimado]\n" +
-                                    generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
-                        } else {
-                            try {
-                                videoTranscription = executeGeminiMultimodal(currentVideoExtractedFrames, notes, geminiKey)
-                            } catch (e: Exception) {
-                                videoTranscription = "[Error en Gemini API: ${e.message}. Fallback a estimado]\n" +
-                                        generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
-                            }
-                        }
-                    } else if (hasAudio) {
-                        if (whisperMode == "REMOTE") {
-                            val apiKey = settingsRepository.getApiKey()
-                            if (apiKey.isEmpty()) {
-                                videoTranscription = "[Error: API key no configurada. Transcripción estimada]\n" +
-                                        generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
-                            } else {
-                                try {
-                                    videoTranscription = executeRemoteWhisper(
-                                        tempVideoFile,
-                                        apiKey,
-                                        settingsRepository.getEndpoint(),
-                                        settingsRepository.getModel()
-                                    )
-                                } catch (e: Exception) {
-                                    videoTranscription = "[Error en API remota: ${e.message}. Transcripción estimada]\n" +
-                                            generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
-                                }
-                            }
-                        } else {
-                            videoTranscription = generateFallbackTranscript(notes, durationSec, currentVideoExtractedFrames)
-                        }
-                    } else {
-                        videoTranscription = "Este video específico no contiene pistas de audio."
-                    }
+                    val videoTranscription = performTranscription(
+                        whisperMode = whisperMode,
+                        tempVideoFile = tempVideoFile,
+                        notes = notes,
+                        durationSec = durationSec,
+                        extractedFrames = currentVideoExtractedFrames,
+                        hasAudio = hasAudio,
+                        onProgressUpdate = onProgressUpdate
+                    )
 
                     val filename = videoUri.lastPathSegment ?: "video.mp4"
                     sbTranscription.append("\n\n=== Archivo: $filename ===\n$videoTranscription\n")
@@ -523,7 +449,7 @@ class VideoProcessor(
                 // Consolidated PDF & ZIP
                 onProgressUpdate(90, "Generando reporte consolidado PDF y guardando reportes...")
                 val pdfFile = File(outputDir, "Reporte_Consolidado_Vontext_${jobId.take(6)}.pdf")
-                generatePdf(pdfFile, notes, totalDurationSec, consolidatedExtractedFrames, sbTranscription.toString())
+                generatePdf(pdfFile, notes, totalDurationSec, consolidatedExtractedFrames, sbTranscription.toString(), whisperMode)
 
                 // Save plain text transcription as requested by the user
                 try {
@@ -610,6 +536,105 @@ class VideoProcessor(
         return jobId
     }
 
+    private fun performTranscription(
+        whisperMode: String,
+        tempVideoFile: File,
+        notes: String?,
+        durationSec: Float,
+        extractedFrames: List<FrameInfo>,
+        hasAudio: Boolean,
+        onProgressUpdate: (Int, String) -> Unit
+    ): String {
+        val customModels = settingsRepository.getCustomModels()
+        val selectedModel = customModels.find { it.id == whisperMode }
+
+        return if (whisperMode == "LOCAL") {
+            onProgressUpdate(60, "Procesando transcripción con Whisper Local (Estimado)...")
+            val tr = generateFallbackTranscript(notes, durationSec, extractedFrames)
+            try { Thread.sleep(1200) } catch (e: Exception) {}
+            tr
+        } else if (selectedModel != null) {
+            if (selectedModel.type == "GEMINI") {
+                onProgressUpdate(60, "Analizando con Gemini (${selectedModel.name})...")
+                val apiKey = selectedModel.apiKey
+                if (apiKey.isEmpty()) {
+                    onProgressUpdate(60, "API key no disponible. Usando estimación...")
+                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                } else {
+                    try {
+                        executeGeminiMultimodal(extractedFrames, notes, apiKey, selectedModel.endpoint, selectedModel.modelName)
+                    } catch (e: Exception) {
+                        onProgressUpdate(60, "Error en Gemini API: ${e.message}. Usando estimación...")
+                        generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    }
+                }
+            } else {
+                if (hasAudio) {
+                    val apiKey = selectedModel.apiKey
+                    if (apiKey.isEmpty()) {
+                        onProgressUpdate(60, "API key no configurada. Usando de estimación...")
+                        generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    } else {
+                        try {
+                            onProgressUpdate(60, "Transcribiendo vía API remota (${selectedModel.name})...")
+                            executeRemoteWhisper(
+                                tempVideoFile,
+                                apiKey,
+                                selectedModel.endpoint,
+                                selectedModel.modelName
+                            )
+                        } catch (e: Exception) {
+                            onProgressUpdate(60, "Error en API remota: ${e.message}. Usando estimación...")
+                            generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        }
+                    }
+                } else {
+                    onProgressUpdate(60, "Video sin audio para Whisper Remoto. Generando estimación...")
+                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                }
+            }
+        } else {
+            // Fallbacks for standard/legacy values
+            if (whisperMode == "GEMINI") {
+                onProgressUpdate(60, "Analizando capturas con Gemini API...")
+                val buildConfigKey = com.example.BuildConfig.GEMINI_API_KEY
+                val geminiKey = if (buildConfigKey.isNotBlank() && buildConfigKey != "MY_GEMINI_API_KEY" && buildConfigKey.length > 10) buildConfigKey else settingsRepository.getApiKey()
+                if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
+                    onProgressUpdate(60, "Gemini API key no disponible. Usando estimación...")
+                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                } else {
+                    try {
+                        executeGeminiMultimodal(extractedFrames, notes, geminiKey, "", "gemini-3.5-flash")
+                    } catch (e: Exception) {
+                        onProgressUpdate(60, "Error en Gemini API: ${e.message}. Usando estimación...")
+                        generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    }
+                }
+            } else if (whisperMode == "REMOTE" && hasAudio) {
+                val apiKey = settingsRepository.getApiKey()
+                if (apiKey.isEmpty()) {
+                    onProgressUpdate(60, "API key no configurada. Usando estimación...")
+                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                } else {
+                    try {
+                        onProgressUpdate(60, "Transcribiendo vía API remota...")
+                        executeRemoteWhisper(
+                            tempVideoFile,
+                            apiKey,
+                            settingsRepository.getEndpoint(),
+                            settingsRepository.getModel()
+                        )
+                    } catch (e: Exception) {
+                        onProgressUpdate(60, "Error en API remota: ${e.message}. Usando estimación...")
+                        generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    }
+                }
+            } else {
+                generateFallbackTranscript(notes, durationSec, extractedFrames)
+            }
+        }
+    }
+
     private fun generateFallbackTranscript(notes: String?, durationSec: Float, frames: List<FrameInfo>): String {
         val sb = java.lang.StringBuilder()
         sb.append("[00:00] [Inicio] Iniciando grabación de la pantalla.\n")
@@ -649,7 +674,13 @@ class VideoProcessor(
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
     }
 
-    private fun executeGeminiMultimodal(frames: List<FrameInfo>, notes: String?, apiKey: String): String {
+    private fun executeGeminiMultimodal(
+        frames: List<FrameInfo>,
+        notes: String?,
+        apiKey: String,
+        endpoint: String,
+        modelName: String
+    ): String {
         val client = OkHttpClient.Builder()
             .connectTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
@@ -698,8 +729,20 @@ class VideoProcessor(
 
         val requestBody = jsonRequest.toString().toRequestBody("application/json".toMediaTypeOrNull())
 
+        val finalModel = if (modelName.isNotBlank()) modelName else "gemini-3.5-flash"
+        val requestUrl = if (endpoint.isNotBlank() && endpoint != "https://api.openai.com/v1" && endpoint != "https://generativelanguage.googleapis.com") {
+            if (endpoint.contains("models/")) {
+                "$endpoint?key=$apiKey"
+            } else {
+                val base = endpoint.removeSuffix("/")
+                "$base/v1beta/models/$finalModel:generateContent?key=$apiKey"
+            }
+        } else {
+            "https://generativelanguage.googleapis.com/v1beta/models/$finalModel:generateContent?key=$apiKey"
+        }
+
         val request = Request.Builder()
-            .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey")
+            .url(requestUrl)
             .post(requestBody)
             .build()
 
@@ -759,7 +802,8 @@ class VideoProcessor(
         notes: String?,
         durationSec: Float,
         frames: List<FrameInfo>,
-        transcriptionText: String
+        transcriptionText: String,
+        whisperMode: String
     ) {
         val document = PdfDocument()
 
@@ -796,64 +840,24 @@ class VideoProcessor(
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
 
-        // --- PAGE 1: TITLE & METADATA ---
+        val includeTimestamps = settingsRepository.getIncludeTimestamps()
+
+        // --- PAGES: GRID OF FRAMES & TEXT ---
         var pageNum = 1
-        var pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum++).create()
-        var page = document.startPage(pageInfo)
-        var canvas = page.canvas
-
-        // Draw elegant visual title banner
-        canvas.drawRect(Rect(0, 0, pageWidth, 80), Paint().apply { color = Color.rgb(26, 107, 74) })
-        canvas.drawText("REPORTE CONTEXTUAL VONTEXT", 50f, 48f, Paint().apply {
-            color = Color.WHITE
-            textSize = 18f
-            isFakeBoldText = true
-            isAntiAlias = true
-        })
-
-        var y = 120f
-        canvas.drawText("Especificaciones de Procesamiento:", 50f, y, headerPaint)
-        y += 25f
-        canvas.drawText("Duración del video: ", 50f, y, boldTextPaint)
-        canvas.drawText("${String.format("%.1f", durationSec)} segundos", 170f, y, textPaint)
-        y += 20f
-        canvas.drawText("Cantidad de capturas: ", 50f, y, boldTextPaint)
-        canvas.drawText("${frames.size} frames extraídos", 170f, y, textPaint)
-        y += 20f
-        canvas.drawText("Fecha de reporte: ", 50f, y, boldTextPaint)
-        canvas.drawText(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date()), 170f, y, textPaint)
-
-        if (!notes.isNullOrEmpty()) {
-            y += 40f
-            canvas.drawText("Notas Adicionales:", 50f, y, headerPaint)
-            y += 20f
-            val noteLines = notes.split("\n")
-            noteLines.forEach { line ->
-                if (y < pageHeight - 50) {
-                    canvas.drawText(line, 50f, y, textPaint)
-                    y += 15f
-                }
-            }
-        }
-
-        // Elegant M3-style branding line at bottom
-        canvas.drawText("Generado por Vontext para Android", 50f, (pageHeight - 40).toFloat(), Paint().apply {
-            color = Color.GRAY
-            textSize = 9f
-            isAntiAlias = true
-        })
-
-        document.finishPage(page)
-
-        // --- SUBSEQUENT PAGES: GRID OF FRAMES & TEXT ---
         frames.forEach { frame ->
-            pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum++).create()
-            page = document.startPage(pageInfo)
-            canvas = page.canvas
+            val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum++).create()
+            val page = document.startPage(pageInfo)
+            val canvas = page.canvas
 
             // Header of Frame page
             canvas.drawRect(Rect(0, 0, pageWidth, 40), Paint().apply { color = Color.rgb(232, 245, 238) })
-            canvas.drawText("Frame ${frame.frameNum} - Timestamp: ${String.format("%.2f", frame.timestampMs / 1000f)}s", 30f, 25f, Paint().apply {
+            
+            val frameHeader = if (includeTimestamps) {
+                "Frame ${frame.frameNum} - Timestamp: ${String.format("%.2f", frame.timestampMs / 1000f)}s"
+            } else {
+                "Frame ${frame.frameNum}"
+            }
+            canvas.drawText(frameHeader, 30f, 25f, Paint().apply {
                 color = Color.rgb(13, 59, 40)
                 textSize = 12f
                 isFakeBoldText = true
@@ -880,7 +884,19 @@ class VideoProcessor(
 
                 // Draw transcription context block below image
                 val textY = (startY + h + 40).toFloat()
-                canvas.drawText("Transcripción del segmento de audio cercano:", 50f, textY, headerPaint)
+                
+                // If this is a custom model ID, resolve actual type for header
+                val customModels = settingsRepository.getCustomModels()
+                val matched = customModels.find { it.id == whisperMode }
+                val isGemini = whisperMode == "GEMINI" || (matched != null && matched.type == "GEMINI")
+                val isLocal = whisperMode == "LOCAL"
+
+                val blockTitle = when {
+                    isGemini -> "Transcripción y análisis de pantalla por IA (Gemini):"
+                    isLocal -> "Transcripción del audio del dispositivo (Whisper Local):"
+                    else -> "Transcripción del audio del dispositivo (Whisper Remoto):"
+                }
+                canvas.drawText(blockTitle, 50f, textY, headerPaint)
 
                 // Match specific transcript based on timestamps
                 val seconds = frame.timestampMs / 1000f
@@ -890,8 +906,17 @@ class VideoProcessor(
                 val lines = relevantSnippet.split("\n")
                 lines.forEach { line ->
                     if (snippetY < pageHeight - 50) {
-                        canvas.drawText(line, 50f, snippetY, textPaint)
-                        snippetY += 15f
+                        val cleanLine = if (!includeTimestamps) {
+                            line.replace(Regex("^\\[\\d{2}:\\d{2}\\]\\s*"), "")
+                                .replace(Regex("^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*"), "")
+                        } else {
+                            line
+                        }
+                        // Skip printing if it's empty after stripping
+                        if (cleanLine.trim().isNotEmpty()) {
+                            canvas.drawText(cleanLine, 50f, snippetY, textPaint)
+                            snippetY += 15f
+                        }
                     }
                 }
             }
@@ -907,33 +932,47 @@ class VideoProcessor(
     }
 
     private fun extractSegmentForTime(fullText: String, seconds: Float): String {
-        // If it's a simple estimated text list, find the closest matching paragraph
-        val paragraphs = fullText.split("\n")
-        val matches = mutableListOf<String>()
+        val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return ""
 
-        for (para in paragraphs) {
-            if (para.contains("[") && para.contains("]")) {
-                val timePart = para.substringAfter("[").substringBefore("]")
+        // Try to find the closest line that has a timestamp
+        var closestLine: String? = null
+        var minDiff = Float.MAX_VALUE
+
+        val matchedLines = mutableListOf<String>()
+
+        for (line in lines) {
+            if (line.contains("[") && line.contains("]")) {
+                val timePart = line.substringAfter("[").substringBefore("]")
                 if (timePart.contains(":")) {
                     val parts = timePart.split(":")
                     val min = parts.getOrNull(0)?.toIntOrNull() ?: 0
                     val sec = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                    val currentSec = min * 60 + sec
-                    if (Math.abs(currentSec - seconds) <= 20) {
-                        matches.add(para)
+                    val lineSec = min * 60 + sec
+                    val diff = Math.abs(lineSec - seconds)
+                    if (diff < minDiff) {
+                        minDiff = diff
+                        closestLine = line
+                    }
+                    // If we want very close match (3 seconds)
+                    if (diff <= 3) {
+                        matchedLines.add(line)
                     }
                 }
             }
         }
 
-        if (matches.isNotEmpty()) {
-            return matches.joinToString("\n")
+        if (matchedLines.isNotEmpty()) {
+            return matchedLines.joinToString("\n")
+        }
+        if (closestLine != null) {
+            return closestLine
         }
 
-        // Default: return the full transcript snippet if compact or not timestamp-structured
+        // Fallback for non-timestamp paragraphs
         if (fullText.length > 300) {
             val length = fullText.length
-            val ratio = seconds / (fullText.length / 50f)  // approximate mapping
+            val ratio = seconds / (fullText.length / 50f)
             val start = Math.max(0, (ratio * 150).toInt())
             val end = Math.min(length, start + 250)
             return "..." + fullText.substring(start, end) + "..."
