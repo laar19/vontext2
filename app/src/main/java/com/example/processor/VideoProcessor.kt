@@ -987,32 +987,23 @@ class VideoProcessor(
             .readTimeout(90, TimeUnit.SECONDS)
             .build()
 
-        val tempPcmFile = File(context.cacheDir, "temp_audio_${System.currentTimeMillis()}.pcm")
-        val tempWavFile = File(context.cacheDir, "temp_audio_${System.currentTimeMillis()}.wav")
-
+        val tempAudioFile = File(context.cacheDir, "temp_audio_${System.currentTimeMillis()}.m4a")
         var extractSuccess = false
         try {
-            extractSuccess = decodeAndResampleAudio(videoFile, tempPcmFile)
-            if (extractSuccess && tempPcmFile.exists() && tempPcmFile.length() > 0L) {
-                convertPcmToWav(tempPcmFile, tempWavFile, 16000L, 1)
-            }
+            extractSuccess = extractAudioTrack(videoFile, tempAudioFile)
         } catch (e: Exception) {
             e.printStackTrace()
             extractSuccess = false
-        } finally {
-            if (tempPcmFile.exists()) {
-                tempPcmFile.delete()
-            }
         }
 
-        val fileToUpload = if (extractSuccess && tempWavFile.exists() && tempWavFile.length() > 0L) {
-            tempWavFile
+        val fileToUpload = if (extractSuccess && tempAudioFile.exists() && tempAudioFile.length() > 0L) {
+            tempAudioFile
         } else {
             videoFile
         }
 
-        val mediaType = if (fileToUpload == tempWavFile) {
-            "audio/wav".toMediaTypeOrNull()
+        val mediaType = if (fileToUpload == tempAudioFile) {
+            "audio/m4a".toMediaTypeOrNull()
         } else {
             "video/mp4".toMediaTypeOrNull()
         }
@@ -1097,8 +1088,8 @@ class VideoProcessor(
                 return json.optString("text", "")
             }
         } finally {
-            if (tempWavFile.exists()) {
-                tempWavFile.delete()
+            if (tempAudioFile.exists()) {
+                tempAudioFile.delete()
             }
         }
     }
@@ -1232,86 +1223,86 @@ class VideoProcessor(
         val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ""
 
-        // Try to parse segments of format <start-end>[time] text
-        val parsedSegments = mutableListOf<Triple<Float, Float, String>>()
-        var hasAnyTags = false
+        val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
+        if (frameTimeSecs.isEmpty()) return ""
 
-        for (line in lines) {
-            val tagMatch = Regex("^<(\\d+\\.\\d+)-(\\d+\\.\\d+)>(.*)").find(line)
-            if (tagMatch != null) {
-                hasAnyTags = true
-                val start = tagMatch.groupValues[1].toFloatOrNull() ?: 0f
-                val end = tagMatch.groupValues[2].toFloatOrNull() ?: 0f
-                val rest = tagMatch.groupValues[3].trim()
-                parsedSegments.add(Triple(start, end, rest))
-            }
+        // Detect if there's any line with a timestamp
+        val hasAnyTimestamp = lines.any { line ->
+            line.contains(Regex("<\\d+(?:\\.\\d+)?-\\d+(?:\\.\\d+)?>")) || 
+            line.contains(Regex("\\[\\d+:\\d+\\]")) ||
+            line.contains(Regex("\\[\\d+:\\d+:\\d+\\]"))
         }
 
-        if (hasAnyTags) {
-            // Find all segments that cover 'seconds'
-            val overlapping = parsedSegments.filter { seconds >= it.first && seconds <= it.second }
-            if (overlapping.isNotEmpty()) {
-                return overlapping.joinToString("\n") { it.third }
-            }
-
-            // Fallback: If no direct overlap, find the segment that runs closest to 'seconds'
-            var closestSegment: Triple<Float, Float, String>? = null
-            var minDistance = Float.MAX_VALUE
-            for (seg in parsedSegments) {
-                val distance = when {
-                    seconds < seg.first -> seg.first - seconds
-                    seconds > seg.second -> seconds - seg.second
-                    else -> 0f
+        if (!hasAnyTimestamp) {
+            // Fallback: distribute lines proportionally across frames
+            val approxLinesPerFrame = Math.ceil(lines.size.toDouble() / allFrames.size).toInt()
+            val frameIndex = allFrames.indexOfFirst { Math.abs((it.timestampMs / 1000f) - seconds) < 0.01f }
+            if (frameIndex != -1) {
+                val startIdx = frameIndex * approxLinesPerFrame
+                val endIdx = Math.min(lines.size, startIdx + approxLinesPerFrame)
+                if (startIdx < lines.size) {
+                    return lines.subList(startIdx, endIdx).joinToString("\n")
                 }
-                if (distance < minDistance) {
-                    minDistance = distance
-                    closestSegment = seg
-                }
-            }
-            if (closestSegment != null) {
-                return closestSegment.third
             }
             return ""
         }
 
-        // Fallback or legacy (no tags like <start-end>)
-        val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
-        if (frameTimeSecs.isEmpty()) return fullText
-
+        // Each line that has a timestamp gets mapped to the absolute closest frame.
+        // We will collect the lines that are assigned to the current 'seconds' frame.
         val matchedLines = mutableListOf<String>()
+
         for (line in lines) {
-            if (line.contains("[") && line.contains("]")) {
-                val timePart = line.substringAfter("[").substringBefore("]")
-                if (timePart.contains(":")) {
-                    val parts = timePart.split(":")
-                    val min = parts.getOrNull(0)?.toIntOrNull() ?: 0
-                    val sec = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                    val lineSec = min * 60 + sec
+            var lineSec: Float? = null
 
-                    // Find which frame is closest to lineSec
-                    var closestFrameTime = frameTimeSecs[0]
-                    var minDiff = Math.abs(frameTimeSecs[0] - lineSec)
-                    for (ft in frameTimeSecs) {
-                        val diff = Math.abs(ft - lineSec)
-                        if (diff < minDiff) {
-                            minDiff = diff
-                            closestFrameTime = ft
-                        }
-                    }
+            // 1) Match <start-end> format
+            val tagMatch = Regex("<(\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)>").find(line)
+            if (tagMatch != null) {
+                lineSec = tagMatch.groupValues[1].toFloatOrNull()
+            }
 
-                    // If this frame (seconds) is the closest frame to the line, include it!
-                    if (Math.abs(closestFrameTime - seconds) < 0.01f) {
-                        matchedLines.add(line)
+            // 2) If not found, match [HH:MM:SS] format
+            if (lineSec == null) {
+                val hmsMatch = Regex("\\[(\\d+):(\\d+):(\\d+)\\]").find(line)
+                if (hmsMatch != null) {
+                    val hrs = hmsMatch.groupValues[1].toIntOrNull() ?: 0
+                    val mins = hmsMatch.groupValues[2].toIntOrNull() ?: 0
+                    val secs = hmsMatch.groupValues[3].toIntOrNull() ?: 0
+                    lineSec = (hrs * 3600 + mins * 60 + secs).toFloat()
+                }
+            }
+
+            // 3) If not found, match [MM:SS] format
+            if (lineSec == null) {
+                val msMatch = Regex("\\[(\\d+):(\\d+)\\]").find(line)
+                if (msMatch != null) {
+                    val mins = msMatch.groupValues[1].toIntOrNull() ?: 0
+                    val secs = msMatch.groupValues[2].toIntOrNull() ?: 0
+                    lineSec = (mins * 60 + secs).toFloat()
+                }
+            }
+
+            if (lineSec != null) {
+                // Find the frame in allFrames that is closest to lineSec
+                var closestFrameTime = frameTimeSecs[0]
+                var minDiff = Math.abs(frameTimeSecs[0] - lineSec)
+                for (ft in frameTimeSecs) {
+                    val diff = Math.abs(ft - lineSec)
+                    if (diff < minDiff) {
+                        minDiff = diff
+                        closestFrameTime = ft
                     }
+                }
+
+                // If this page's frame (seconds) is indeed the closest one, include this line!
+                if (Math.abs(closestFrameTime - seconds) < 0.01f) {
+                    // Clean the "<startTime-endTime>" tag from the printed output so it looks clean (like [00:04] Text)
+                    val cleanLine = line.replace(Regex("<\\d+(?:\\.\\d+)?-\\d+(?:\\.\\d+)?>"), "").trim()
+                    matchedLines.add(cleanLine)
                 }
             }
         }
 
-        if (matchedLines.isNotEmpty()) {
-            return matchedLines.joinToString("\n")
-        }
-
-        return ""
+        return matchedLines.joinToString("\n")
     }
 
     private fun createZip(srcFolder: File, destZipFile: File) {
