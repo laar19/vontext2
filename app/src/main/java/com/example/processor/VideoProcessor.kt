@@ -193,7 +193,7 @@ class VideoProcessor(
                 // Save plain text transcription as requested by the user
                 try {
                     val txtFile = File(outputDir, "transcripcion.txt")
-                    txtFile.writeText(transcriptionText)
+                    txtFile.writeText(cleanTranscription(transcriptionText))
                 } catch (e: Exception) {
                     // Ignore or fallback
                 }
@@ -222,7 +222,7 @@ class VideoProcessor(
                     zipPath = zipFile.absolutePath,
                     frameInterval = frameInterval,
                     whisperMode = whisperMode,
-                    transcriptionText = transcriptionText
+                    transcriptionText = cleanTranscription(transcriptionText)
                 )
                 jobRepository.insertJob(completedJob)
 
@@ -454,7 +454,7 @@ class VideoProcessor(
                 // Save plain text transcription as requested by the user
                 try {
                     val txtFile = File(outputDir, "transcripcion.txt")
-                    txtFile.writeText(sbTranscription.toString())
+                    txtFile.writeText(cleanTranscription(sbTranscription.toString()))
                 } catch (e: Exception) {
                     // Ignore or fallback
                 }
@@ -481,7 +481,7 @@ class VideoProcessor(
                     zipPath = zipFile.absolutePath,
                     frameInterval = frameInterval,
                     whisperMode = whisperMode,
-                    transcriptionText = sbTranscription.toString()
+                    transcriptionText = cleanTranscription(sbTranscription.toString())
                 )
                 jobRepository.insertJob(completedJob)
 
@@ -1046,11 +1046,12 @@ class VideoProcessor(
                             for (i in 0 until segments.length()) {
                                 val seg = segments.getJSONObject(i)
                                 val start = seg.optDouble("start", 0.0)
+                                val end = seg.optDouble("end", start + 3.0)
                                 val text = seg.optString("text", "")
                                 if (text.isNotBlank()) {
                                     val min = (start / 60).toInt()
                                     val sec = (start % 60).toInt()
-                                    sb.append(String.format("[%02d:%02d] %s\n", min, sec, text.trim()))
+                                    sb.append(String.format(java.util.Locale.US, "<%.2f-%.2f>[%02d:%02d] %s\n", start, end, min, sec, text.trim()))
                                 }
                             }
                             if (sb.isNotEmpty()) {
@@ -1189,25 +1190,12 @@ class VideoProcessor(
 
                 // Draw transcription context block below image
                 val textY = (startY + h + 40).toFloat()
-                
-                // If this is a custom model ID, resolve actual type for header
-                val customModels = settingsRepository.getCustomModels()
-                val matched = customModels.find { it.id == whisperMode }
-                val isGemini = whisperMode == "GEMINI" || (matched != null && matched.type == "GEMINI")
-                val isLocal = whisperMode == "LOCAL"
-
-                val blockTitle = when {
-                    isGemini -> "Transcripción y análisis de pantalla por IA (Gemini):"
-                    isLocal -> "Transcripción del audio del dispositivo (Whisper Local):"
-                    else -> "Transcripción del audio del dispositivo (Whisper Remoto):"
-                }
-                canvas.drawText(blockTitle, 50f, textY, headerPaint)
 
                 // Match specific transcript based on timestamps
                 val seconds = frame.timestampMs / 1000f
                 val relevantSnippet = extractSegmentForTime(transcriptionText, seconds, frames)
                 
-                var snippetY = textY + 20f
+                var snippetY = textY
                 val lines = relevantSnippet.split("\n")
                 lines.forEach { line ->
                     if (snippetY < pageHeight - 50) {
@@ -1236,15 +1224,61 @@ class VideoProcessor(
         document.close()
     }
 
+    private fun cleanTranscription(rawText: String): String {
+        return rawText.replace(Regex("<[^>]+>"), "")
+    }
+
     private fun extractSegmentForTime(fullText: String, seconds: Float, allFrames: List<FrameInfo>): String {
         val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ""
 
+        // Try to parse segments of format <start-end>[time] text
+        val parsedSegments = mutableListOf<Triple<Float, Float, String>>()
+        var hasAnyTags = false
+
+        for (line in lines) {
+            val tagMatch = Regex("^<(\\d+\\.\\d+)-(\\d+\\.\\d+)>(.*)").find(line)
+            if (tagMatch != null) {
+                hasAnyTags = true
+                val start = tagMatch.groupValues[1].toFloatOrNull() ?: 0f
+                val end = tagMatch.groupValues[2].toFloatOrNull() ?: 0f
+                val rest = tagMatch.groupValues[3].trim()
+                parsedSegments.add(Triple(start, end, rest))
+            }
+        }
+
+        if (hasAnyTags) {
+            // Find all segments that cover 'seconds'
+            val overlapping = parsedSegments.filter { seconds >= it.first && seconds <= it.second }
+            if (overlapping.isNotEmpty()) {
+                return overlapping.joinToString("\n") { it.third }
+            }
+
+            // Fallback: If no direct overlap, find the segment that runs closest to 'seconds'
+            var closestSegment: Triple<Float, Float, String>? = null
+            var minDistance = Float.MAX_VALUE
+            for (seg in parsedSegments) {
+                val distance = when {
+                    seconds < seg.first -> seg.first - seconds
+                    seconds > seg.second -> seconds - seg.second
+                    else -> 0f
+                }
+                if (distance < minDistance) {
+                    minDistance = distance
+                    closestSegment = seg
+                }
+            }
+            if (closestSegment != null) {
+                return closestSegment.third
+            }
+            return ""
+        }
+
+        // Fallback or legacy (no tags like <start-end>)
         val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
         if (frameTimeSecs.isEmpty()) return fullText
 
         val matchedLines = mutableListOf<String>()
-
         for (line in lines) {
             if (line.contains("[") && line.contains("]")) {
                 val timePart = line.substringAfter("[").substringBefore("]")
@@ -1275,24 +1309,6 @@ class VideoProcessor(
 
         if (matchedLines.isNotEmpty()) {
             return matchedLines.joinToString("\n")
-        }
-
-        // If the entire text has NO timestamps at all (e.g. standard JSON/text fallback without any segments)
-        val hasAnyTimestamp = lines.any { it.contains("[") && it.contains("]") && it.substringAfter("[").substringBefore("]").contains(":") }
-        if (!hasAnyTimestamp) {
-            val frameIndex = allFrames.indexOfFirst { Math.abs((it.timestampMs / 1000f) - seconds) < 0.01f }
-            if (frameIndex != -1) {
-                val words = fullText.split(Regex("\\s+")).filter { it.isNotEmpty() }
-                if (words.isNotEmpty()) {
-                    val wordsPerFrame = Math.ceil(words.size.toDouble() / allFrames.size).toInt()
-                    val startIdx = frameIndex * wordsPerFrame
-                    val endIdx = Math.min(words.size, startIdx + wordsPerFrame)
-                    if (startIdx < words.size) {
-                        return words.subList(startIdx, endIdx).joinToString(" ")
-                    }
-                }
-            }
-            return ""
         }
 
         return ""
@@ -1475,10 +1491,12 @@ class VideoProcessor(
                 if (resultArray != null && resultArray.length() > 0) {
                     val firstWord = resultArray.getJSONObject(0)
                     val startTime = firstWord.optDouble("start", 0.0)
+                    val lastWord = resultArray.getJSONObject(resultArray.length() - 1)
+                    val endTime = lastWord.optDouble("end", startTime + 2.0)
                     val minutes = (startTime / 60).toInt()
                     val seconds = (startTime % 60).toInt()
                     val timeStr = String.format("[%02d:%02d]", minutes, seconds)
-                    sb.append(timeStr).append(" ").append(text).append("\n")
+                    sb.append(String.format(java.util.Locale.US, "<%.2f-%.2f>%s %s\n", startTime, endTime, timeStr, text))
                 } else {
                     sb.append(text).append("\n")
                 }
