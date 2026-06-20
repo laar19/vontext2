@@ -59,14 +59,14 @@ data class AppColors(
 
 val LocalAppColors = staticCompositionLocalOf {
     AppColors(
-        BrandGreen = Color(0xFF1A6B4A),
-        BrandDarkGreen = Color(0xFF111F0E),
-        LightSage = Color(0xFFD2E8D1),
+        BrandGreen = Color(0xFF1E52B3),
+        BrandDarkGreen = Color(0xFF0F1E36),
+        LightSage = Color(0xFFD6E4F0),
         CharcoalText = Color(0xFF191C19),
         GrayDetail = Color(0xFF414941),
         SoftGrayBorder = Color(0xFFE1E4DF),
         CardBorderHighlight = Color(0xFFBFC9BA),
-        OffWhiteBg = Color(0xFFFBFDF8),
+        OffWhiteBg = Color(0xFFF8FAFC),
         WarmWhite = Color(0xFFFFFFFF),
         MutedGray = Color(0xFF717971)
     )
@@ -110,6 +110,9 @@ fun getTxt(key: String, lang: String): String {
             "Video: " -> "Video: "
             " seg" -> " sec"
             "Whisper " -> "Whisper "
+            "Vosk Local (Offline)" -> "Local Vosk (Offline)"
+            "Listo para usar offline (96 MB)" -> "Ready for offline use (96 MB)"
+            "Requiere descarga para uso local" -> "Requires download for local use"
             "Ver PDF" -> "View PDF"
             "Compartir ZIP" -> "Share ZIP"
             "Configuración de Procesamiento" -> "Processing Settings"
@@ -124,17 +127,17 @@ fun getTxt(key: String, lang: String): String {
             "Restablecer" -> "Reset Defaults"
             "Configuración guardada correctamente." -> "Settings saved successfully."
             "Valores por defecto restablecidos." -> "Default values restored."
-            "Modelo de Transcripción Local (Whisper)" -> "Local Transcription Model (Whisper)"
-            "Descargar Whisper Local (96 MB)" -> "Download Local Whisper (96 MB)"
+            "Modelo de Transcripción Local (Vosk)" -> "Local Transcription Model (Vosk)"
+            "Descargar Vosk Local (96 MB)" -> "Download Local Vosk (96 MB)"
             "Descargando..." -> "Downloading..."
             "Eliminar Modelo" -> "Delete Model"
-            "Modelo local listo y disponible offline." -> "Local model ready and available offline."
+            "Modelo local listo y disponible offline (Vosk)." -> "Local model ready and available offline (Vosk)."
             "Requiere conexión a internet una sola vez para descargar los parámetros del codificador de audio." -> "Requires an internet connection once to download the audio encoder parameters."
             "Modelo descargado con éxito." -> "Model successfully downloaded."
             "Modelo local eliminado." -> "Local model deleted."
             "Procesando Video" -> "Processing Video"
             "Extracción de Frames" -> "Frames Extraction"
-            "Transcripción Whisper" -> "Whisper Transcription"
+            "Transcripción de Audio" -> "Audio Transcription"
             "Generación de PDF y ZIP" -> "PDF & ZIP Generation"
             "Logs de Consola:" -> "Console Logs:"
             "⚠️ El análisis de audio e imagen se ejecuta de forma local. No cierres la ventana." -> "⚠️ Audio and image analysis runs locally. Do not close the window."
@@ -251,27 +254,27 @@ fun MainAppScreen(viewModel: VideoViewModel = viewModel()) {
     val isDark = viewModel.isDarkTheme
     val colors = if (isDark) {
         AppColors(
-            BrandGreen = Color(0xFF68B08A),
-            BrandDarkGreen = Color(0xFFE1E4DF),
-            LightSage = Color(0xFF233D2D),
-            CharcoalText = Color(0xFFE1E4DF),
-            GrayDetail = Color(0xFFA1A9A1),
+            BrandGreen = Color(0xFF6B99E5),
+            BrandDarkGreen = Color(0xFFE2E8F0),
+            LightSage = Color(0xFF1F2D40),
+            CharcoalText = Color(0xFFE2E8F0),
+            GrayDetail = Color(0xFF94A3B8),
             SoftGrayBorder = Color(0xFF2D332D),
             CardBorderHighlight = Color(0xFF3E483D),
-            OffWhiteBg = Color(0xFF111411),
-            WarmWhite = Color(0xFF1E211E),
+            OffWhiteBg = Color(0xFF0F172A),
+            WarmWhite = Color(0xFF1E293B),
             MutedGray = Color(0xFF8E998E)
         )
     } else {
         AppColors(
-            BrandGreen = Color(0xFF1A6B4A),
-            BrandDarkGreen = Color(0xFF111F0E),
-            LightSage = Color(0xFFD2E8D1),
+            BrandGreen = Color(0xFF1E52B3),
+            BrandDarkGreen = Color(0xFF0F1E36),
+            LightSage = Color(0xFFD6E4F0),
             CharcoalText = Color(0xFF191C19),
             GrayDetail = Color(0xFF414941),
             SoftGrayBorder = Color(0xFFE1E4DF),
             CardBorderHighlight = Color(0xFFBFC9BA),
-            OffWhiteBg = Color(0xFFFBFDF8),
+            OffWhiteBg = Color(0xFFF8FAFC),
             WarmWhite = Color(0xFFFFFFFF),
             MutedGray = Color(0xFF717971)
         )
@@ -608,19 +611,22 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = txt("Whisper Local (Offline)"),
+                                    text = txt("Vosk Local (Offline)"),
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
                                     color = CharcoalText
                                 )
+                                val isDownloaded = viewModel.downloadedVoskLanguages.contains(viewModel.activeVoskLanguage)
+                                val activeModelLabel = viewModel.availableVoskModels.find { it.code == viewModel.activeVoskLanguage }?.displayName ?: viewModel.activeVoskLanguage.uppercase()
                                 Text(
-                                    text = if (viewModel.isWhisperLocalDownloaded) txt("Listo para usar offline (96 MB)") else txt("Requiere descarga para uso local"),
+                                    text = if (isDownloaded) "${txt("Listo para usar offline")} ($activeModelLabel)" else "${txt("Requiere descarga para uso local")} ($activeModelLabel)",
                                     fontSize = 12.sp,
                                     color = MutedGray
                                 )
                             }
 
-                            if (!viewModel.isWhisperLocalDownloaded) {
+                            val isDownloaded = viewModel.downloadedVoskLanguages.contains(viewModel.activeVoskLanguage)
+                            if (!isDownloaded) {
                                 if (viewModel.isDownloadingLocalWhisper) {
                                     Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
                                         CircularProgressIndicator(
@@ -635,8 +641,9 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                                     IconButton(
                                         onClick = {
                                             viewModel.downloadLocalWhisper(
-                                                onSuccess = {
-                                                    Toast.makeText(contextForToast, getTxt("Modelo descargado con éxito.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
+                                                viewModel.activeVoskLanguage,
+                                                onSuccess = { msg ->
+                                                    Toast.makeText(contextForToast, msg, Toast.LENGTH_SHORT).show()
                                                 },
                                                 onError = { err ->
                                                     Toast.makeText(contextForToast, err, Toast.LENGTH_SHORT).show()
@@ -647,7 +654,7 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.KeyboardArrowDown,
-                                            contentDescription = "Descargar Whisper Local",
+                                            contentDescription = "Descargar Vosk Local",
                                             tint = BrandGreen
                                         )
                                     }
@@ -1453,7 +1460,7 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
             val context = LocalContext.current
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = txt("Modelo de Transcripción Local (Whisper)"),
+                    text = txt("Modelos de Idioma de Transcripción Local (Vosk)"),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = GrayDetail
@@ -1465,119 +1472,155 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                 ) {
                     Column(
                         modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Text(
-                            text = txt("Requiere conexión a internet una sola vez para descargar los parámetros del codificador de audio."),
+                            text = txt("Para procesar de forma local y 100% offline. Selecciona cuál idioma usar para la transcripción y descarga su respectivo paquete de parámetros."),
                             fontSize = 12.sp,
                             color = MutedGray,
                             lineHeight = 16.sp
                         )
 
-                        if (viewModel.isWhisperLocalDownloaded) {
-                            // Model is ready
+                        viewModel.availableVoskModels.forEach { targetModel ->
+                            val code = targetModel.code
+                            val isDownloaded = viewModel.downloadedVoskLanguages.contains(code)
+                            val isActive = viewModel.activeVoskLanguage == code
+                            val isDownloadingThis = viewModel.isDownloadingLocalWhisper && viewModel.downloadingLocalWhisperLangCode == code
+
                             Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isActive) LightSage.copy(alpha = 0.4f) else Color.Transparent)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isActive) BrandGreen.copy(alpha = 0.5f) else Color.Transparent,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    // RadioButton to set as Active
+                                    RadioButton(
+                                        selected = isActive,
+                                        onClick = {
+                                            viewModel.selectActiveVoskLanguage(code)
+                                            Toast.makeText(context, "${targetModel.displayName} ${getTxt("seleccionado", viewModel.appLanguage)}", Toast.LENGTH_SHORT).show()
+                                        },
+                                        colors = RadioButtonDefaults.colors(selectedColor = BrandGreen),
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    
+                                    // Language flag/pill badge
                                     Box(
                                         modifier = Modifier
-                                            .size(10.dp)
-                                            .clip(CircleShape)
-                                            .background(BrandGreen)
-                                    )
-                                    Text(
-                                        text = txt("Modelo local listo y disponible offline."),
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = CharcoalText
-                                    )
-                                }
-                                
-                                OutlinedButton(
-                                    onClick = {
-                                        viewModel.deleteLocalWhisper {
-                                            Toast.makeText(context, getTxt("Modelo local eliminado.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFB3261E)),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFB3261E)),
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp)
-                                        .testTag("delete_whisper_btn")
-                                ) {
-                                    Text(
-                                        text = txt("Eliminar Modelo"),
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        } else {
-                            // Model is not ready / downloading
-                            if (viewModel.isDownloadingLocalWhisper) {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(LightSage)
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
                                         Text(
-                                            text = txt("Descargando..."),
-                                            fontSize = 12.sp,
+                                            text = code.uppercase(),
+                                            fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = BrandGreen
                                         )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "${(viewModel.localWhisperDownloadProgress * 100).toInt()}%",
-                                            fontSize = 12.sp,
+                                            text = targetModel.displayName,
+                                            fontSize = 14.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = BrandDarkGreen
+                                            color = CharcoalText
+                                        )
+                                        Text(
+                                            text = targetModel.size,
+                                            fontSize = 11.sp,
+                                            color = GrayDetail
                                         )
                                     }
-                                    LinearProgressIndicator(
-                                        progress = { viewModel.localWhisperDownloadProgress },
-                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                                        color = BrandGreen,
-                                        trackColor = SoftGrayBorder
-                                    )
-                                    Text(
-                                        text = viewModel.localWhisperDownloadStatus,
-                                        fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = GrayDetail
-                                    )
-                                }
-                            } else {
-                                Button(
-                                    onClick = {
-                                        viewModel.downloadLocalWhisper(
-                                            onSuccess = { msg ->
-                                                Toast.makeText(context, getTxt("Modelo descargado con éxito.", viewModel.appLanguage), Toast.LENGTH_SHORT).show()
-                                            },
-                                            onError = { err ->
-                                                Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
-                                            }
+
+                                    // Action buttons (Download, Delete, Progress, Done)
+                                    if (isDownloadingThis) {
+                                        // Row shows indicator on the right instead of button
+                                        Text(
+                                            text = "${(viewModel.localWhisperDownloadProgress * 100).toInt()}%",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = BrandGreen
                                         )
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp)
-                                        .testTag("download_whisper_btn"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = BrandGreen)
-                                ) {
-                                    Text(
-                                        text = txt("Descargar Whisper Local (96 MB)"),
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
+                                    } else if (isDownloaded) {
+                                        // Small Trash Can icon button to delete model
+                                        IconButton(
+                                            onClick = {
+                                                viewModel.deleteLocalWhisper(code) {
+                                                    Toast.makeText(context, "${targetModel.displayName} ${getTxt("eliminado", viewModel.appLanguage)}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Eliminar ${targetModel.displayName}",
+                                                tint = Color(0xFFB3261E),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    } else {
+                                        // Download button
+                                        IconButton(
+                                            onClick = {
+                                                if (viewModel.isDownloadingLocalWhisper) {
+                                                    Toast.makeText(context, "Espere a que termine la descarga actual", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    viewModel.downloadLocalWhisper(
+                                                        code,
+                                                        onSuccess = { msg ->
+                                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                                        },
+                                                        onError = { err ->
+                                                            Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    )
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowDown,
+                                                contentDescription = "Descargar ${targetModel.displayName}",
+                                                tint = BrandGreen,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Show progress bar if downloading this specific model
+                                if (isDownloadingThis) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        LinearProgressIndicator(
+                                            progress = { viewModel.localWhisperDownloadProgress },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(4.dp)
+                                                .clip(RoundedCornerShape(2.dp)),
+                                            color = BrandGreen,
+                                            trackColor = SoftGrayBorder
+                                        )
+                                        Text(
+                                            text = viewModel.localWhisperDownloadStatus,
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = GrayDetail
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2116,7 +2159,7 @@ fun ProcessingOverlay(viewModel: VideoViewModel) {
                         isDone = viewModel.currentProgress >= 55
                     )
                     ProcessingStepRow(
-                        stepName = txt("Transcripción Whisper"),
+                        stepName = txt("Transcripción de Audio"),
                         isActive = viewModel.currentProgress >= 55 && viewModel.currentProgress < 75,
                         isDone = viewModel.currentProgress >= 75
                     )

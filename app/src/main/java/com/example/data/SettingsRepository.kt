@@ -28,6 +28,9 @@ class SettingsRepository(context: Context) {
     fun isWhisperLocalDownloaded(): Boolean = prefs.getBoolean("whisper_local_downloaded", false)
     fun setWhisperLocalDownloaded(value: Boolean) = prefs.edit().putBoolean("whisper_local_downloaded", value).apply()
 
+    fun getActiveLocalLanguage(): String = prefs.getString("active_local_language", "es") ?: "es"
+    fun setActiveLocalLanguage(value: String) = prefs.edit().putString("active_local_language", value).apply()
+
     fun getSelectedModelId(): String = prefs.getString("selected_model_id", "LOCAL") ?: "LOCAL"
     fun setSelectedModelId(value: String) = prefs.edit().putString("selected_model_id", value).apply()
 

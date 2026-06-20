@@ -549,10 +549,85 @@ class VideoProcessor(
         val selectedModel = customModels.find { it.id == whisperMode }
 
         return if (whisperMode == "LOCAL") {
-            onProgressUpdate(60, "Procesando transcripción con Whisper Local (Estimado)...")
-            val tr = generateFallbackTranscript(notes, durationSec, extractedFrames)
-            try { Thread.sleep(1200) } catch (e: Exception) {}
-            tr
+            onProgressUpdate(60, "Iniciando transcripción local offline...")
+            val activeLang = settingsRepository.getActiveLocalLanguage()
+            var modelRootDir = File(context.filesDir, "vosk-model-$activeLang")
+            var hasModel = modelRootDir.exists() && modelRootDir.isDirectory && 
+                           (modelRootDir.list()?.isNotEmpty() ?: false)
+            
+            if (!hasModel && activeLang == "es") {
+                val legacyDir = File(context.filesDir, "vosk-model")
+                if (legacyDir.exists() && legacyDir.isDirectory && (legacyDir.list()?.isNotEmpty() ?: false)) {
+                    modelRootDir = legacyDir
+                    hasModel = true
+                }
+            }
+            
+            if (!hasModel) {
+                onProgressUpdate(60, "Modelo local ($activeLang) no descargado aún. Usando estimación...")
+                "**[TRANCRIPCIÓN LOCAL DE SEGURIDAD - REQUIERE DESCARGA]**\n" +
+                "El modelo de voz offline para el idioma '$activeLang' no se ha detectado. Por favor ve a Ajustes y selecciona y descarga el modelo local para poder transcribir offline sin conexión.\n\n" +
+                generateFallbackTranscript(notes, durationSec, extractedFrames)
+            } else if (!hasAudio) {
+                onProgressUpdate(60, "El video no tiene pista de audio audible.")
+                "**[VIDEO SIN AUDIO DETECTADO]**\n" +
+                "No se pudo extraer una pista de audio para transcribir.\n\n" +
+                generateFallbackTranscript(notes, durationSec, extractedFrames)
+            } else {
+                try {
+                    onProgressUpdate(65, "Extrayendo y combinando canales de audio...")
+                    val pcmFile = File(context.cacheDir, "decoded_audio_${System.currentTimeMillis()}.pcm")
+                    val decodedOk = decodeAndResampleAudio(tempVideoFile, pcmFile)
+                    if (!decodedOk || !pcmFile.exists() || pcmFile.length() == 0L) {
+                        onProgressUpdate(65, "No se pudo decodificar el audio a PCM.")
+                        "**[ERROR EN DECODIFICACIÓN LOCAL]**\n" +
+                        "No se pudo decodificar la pista de audio del archivo. Confirma si el formato es compatible o usa la opción de Whisper Remoto.\n\n" +
+                        generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    } else {
+                        onProgressUpdate(75, "Inicializando motor de voz local ($activeLang)...")
+                        val innerModelDir = modelRootDir.listFiles()?.find { it.isDirectory && File(it, "am").exists() } ?: modelRootDir
+                        
+                        val voskModel = org.vosk.Model(innerModelDir.absolutePath)
+                        val recognizer = org.vosk.Recognizer(voskModel, 16000.0f)
+                        recognizer.setWords(true)
+
+                        onProgressUpdate(80, "Transcribiendo audio offline (Procesando ondas)...")
+                        
+                        val inputStream = java.io.FileInputStream(pcmFile)
+                        val bStream = java.io.BufferedInputStream(inputStream)
+                        val buffer = ByteArray(4096)
+                        var len: Int
+                        
+                        val jsonResults = java.util.ArrayList<String>()
+                        while (bStream.read(buffer).also { len = it } != -1) {
+                            if (recognizer.acceptWaveForm(buffer, len)) {
+                                jsonResults.add(recognizer.result)
+                            }
+                        }
+                        jsonResults.add(recognizer.finalResult)
+                        
+                        bStream.close()
+                        inputStream.close()
+                        pcmFile.delete() // Cleanup raw pcm
+                        
+                        onProgressUpdate(90, "Formateando y estructurando marcas de tiempo...")
+                        val transcript = buildTranscriptWithTimestamps(jsonResults)
+                        if (transcript.trim().isEmpty()) {
+                            "**[FIN DE LA TRANSCRIPCIÓN LOCAL]**\n" +
+                            "El audio del video fue procesado, pero no se reconoció ninguna palabra en español o en el idioma del audio.\n\n" +
+                            generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        } else {
+                            "Transcripción local del dispositivo:\n\n$transcript"
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    onProgressUpdate(65, "Fallo en motor local: ${e.message}")
+                    "**[FALLO EN MOTOR LOCAL DE VOZ]**\n" +
+                    "Error: ${e.localizedMessage}.\n\n" +
+                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                }
+            }
         } else if (selectedModel != null) {
             if (selectedModel.type == "GEMINI") {
                 onProgressUpdate(60, "Analizando con Gemini (${selectedModel.name})...")
@@ -909,7 +984,7 @@ class VideoProcessor(
 
         // Paint configurations
         val titlePaint = Paint().apply {
-            color = Color.rgb(26, 107, 74) // Vontext primary green!
+            color = Color.rgb(30, 82, 179) // Vontext primary blue!
             textSize = 20f
             isFakeBoldText = true
             isAntiAlias = true
@@ -1094,5 +1169,176 @@ class VideoProcessor(
                 }
             }
         }
+    }
+
+    private fun decodeAndResampleAudio(videoFile: File, pcmOutputFile: File): Boolean {
+        val extractor = android.media.MediaExtractor()
+        try {
+            extractor.setDataSource(videoFile.absolutePath)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
+
+        var trackIndex = -1
+        var format: android.media.MediaFormat? = null
+        for (i in 0 until extractor.trackCount) {
+            val f = extractor.getTrackFormat(i)
+            val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+            if (mime.startsWith("audio/")) {
+                trackIndex = i
+                format = f
+                break
+            }
+        }
+
+        if (trackIndex == -1 || format == null) {
+            extractor.release()
+            return false
+        }
+
+        extractor.selectTrack(trackIndex)
+
+        val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+        var decoder: android.media.MediaCodec? = null
+        var outBuffer: java.io.BufferedOutputStream? = null
+        var outStream: java.io.FileOutputStream? = null
+        try {
+            decoder = android.media.MediaCodec.createDecoderByType(mime)
+            decoder.configure(format, null, null, 0)
+            decoder.start()
+
+            outStream = java.io.FileOutputStream(pcmOutputFile)
+            outBuffer = java.io.BufferedOutputStream(outStream)
+
+            val srcSampleRate = if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)) {
+                format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+            } else {
+                44100
+            }
+            val srcChannels = if (format.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT)) {
+                format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+            } else {
+                1
+            }
+
+            val info = android.media.MediaCodec.BufferInfo()
+            var isEOS = false
+
+            while (!isEOS) {
+                if (!isEOS) {
+                    val inIndex = decoder.dequeueInputBuffer(10000)
+                    if (inIndex >= 0) {
+                        val buffer = decoder.getInputBuffer(inIndex)
+                        if (buffer != null) {
+                            val sampleSize = extractor.readSampleData(buffer, 0)
+                            if (sampleSize < 0) {
+                                decoder.queueInputBuffer(inIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isEOS = true
+                            } else {
+                                decoder.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                val outIndex = decoder.dequeueOutputBuffer(info, 10000)
+                if (outIndex >= 0) {
+                    val buffer = decoder.getOutputBuffer(outIndex)
+                    if (buffer != null && info.size > 0) {
+                        val chunk = ByteArray(info.size)
+                        buffer.position(info.offset)
+                        buffer.get(chunk)
+                        buffer.clear()
+
+                        val shortsCount = chunk.size / 2
+                        val shorts = ShortArray(shortsCount)
+                        val byteBuf = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        for (s in 0 until shortsCount) {
+                            if (byteBuf.remaining() >= 2) {
+                                shorts[s] = byteBuf.getShort()
+                            }
+                        }
+
+                        val monoShorts = if (srcChannels == 2) {
+                            val mCount = shorts.size / 2
+                            val mono = ShortArray(mCount)
+                            for (m in 0 until mCount) {
+                                val left = shorts[m * 2].toInt()
+                                val right = shorts[m * 2 + 1].toInt()
+                                mono[m] = ((left + right) / 2).toShort()
+                            }
+                            mono
+                        } else {
+                            shorts
+                        }
+
+                        if (srcSampleRate == 16000) {
+                            for (sample in monoShorts) {
+                                outBuffer.write(sample.toInt() and 0xFF)
+                                outBuffer.write((sample.toInt() shr 8) and 0xFF)
+                            }
+                        } else {
+                            val ratio = srcSampleRate.toDouble() / 16000.0
+                            var srcIndex = 0.0
+                            while (srcIndex < monoShorts.size) {
+                                val idx = srcIndex.toInt()
+                                if (idx < monoShorts.size) {
+                                    val sample = monoShorts[idx]
+                                    outBuffer.write(sample.toInt() and 0xFF)
+                                    outBuffer.write((sample.toInt() shr 8) and 0xFF)
+                                }
+                                srcIndex += ratio
+                            }
+                        }
+                    }
+                    decoder.releaseOutputBuffer(outIndex, false)
+                }
+            }
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        } finally {
+            try {
+                outBuffer?.flush()
+                outBuffer?.close()
+                outStream?.close()
+            } catch (e: Exception) {}
+            try {
+                decoder?.stop()
+                decoder?.release()
+            } catch (e: Exception) {}
+            try {
+                extractor.release()
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun buildTranscriptWithTimestamps(jsonResultList: List<String>): String {
+        val sb = java.lang.StringBuilder()
+        for (jsonStr in jsonResultList) {
+            try {
+                val json = JSONObject(jsonStr)
+                val text = json.optString("text", "")
+                if (text.isEmpty()) continue
+
+                val resultArray = json.optJSONArray("result")
+                if (resultArray != null && resultArray.length() > 0) {
+                    val firstWord = resultArray.getJSONObject(0)
+                    val startTime = firstWord.optDouble("start", 0.0)
+                    val minutes = (startTime / 60).toInt()
+                    val seconds = (startTime % 60).toInt()
+                    val timeStr = String.format("[%02d:%02d]", minutes, seconds)
+                    sb.append(timeStr).append(" ").append(text).append("\n")
+                } else {
+                    sb.append(text).append("\n")
+                }
+            } catch (e: Exception) {
+                // Ignore parsing errors
+            }
+        }
+        return sb.toString()
     }
 }

@@ -23,6 +23,7 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     private val jobRepository = JobRepository(database.jobDao())
     val settingsRepository = SettingsRepository(application)
     private val videoProcessor = VideoProcessor(application, jobRepository, settingsRepository)
+    private val appCtx = getApplication<Application>()
 
     // Reactive StateFlow for jobs list
     val allJobs: StateFlow<List<Job>> = jobRepository.allJobs
@@ -45,7 +46,57 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     var whisperMode by mutableStateOf(settingsRepository.getSelectedModelId())
         private set
 
+    data class VoskModelInfo(
+        val code: String,
+        val displayName: String,
+        val size: String,
+        val url: String
+    )
+
+    val availableVoskModels = listOf(
+        VoskModelInfo("es", "Español", "39 MB", "https://alphacephei.com/vosk/models/vosk-model-small-es-0.22.zip"),
+        VoskModelInfo("en", "English", "40 MB", "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"),
+        VoskModelInfo("pt", "Português", "31 MB", "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"),
+        VoskModelInfo("fr", "Français", "39 MB", "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip"),
+        VoskModelInfo("de", "Deutsch", "45 MB", "https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip"),
+        VoskModelInfo("it", "Italiano", "45 MB", "https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip")
+    )
+
+    var activeVoskLanguage by mutableStateOf(settingsRepository.getActiveLocalLanguage())
+        private set
+
+    var downloadedVoskLanguages by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    var isDarkTheme by mutableStateOf(settingsRepository.getDarkThemeEnabled())
+        private set
+    var appLanguage by mutableStateOf(settingsRepository.getLanguage())
+        private set
+
+    // Local Whisper model state
+    var isWhisperLocalDownloaded by mutableStateOf(settingsRepository.isWhisperLocalDownloaded())
+        private set
+    var isDownloadingLocalWhisper by mutableStateOf(false)
+        private set
+    var downloadingLocalWhisperLangCode by mutableStateOf("")
+        private set
+    var localWhisperDownloadProgress by mutableStateOf(0f)
+        private set
+    var localWhisperDownloadStatus by mutableStateOf("")
+        private set
+
     init {
+        try {
+            val oldModel = java.io.File(application.filesDir, "vosk-model")
+            val esModel = java.io.File(application.filesDir, "vosk-model-es")
+            if (oldModel.exists() && oldModel.isDirectory && !esModel.exists()) {
+                oldModel.renameTo(esModel)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        refreshDownloadedVoskLanguages()
+
         val stored = settingsRepository.getSelectedModelId()
         if (stored == "GEMINI") {
             val buildConfigKey = com.example.BuildConfig.GEMINI_API_KEY
@@ -59,6 +110,42 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
                 updateWhisperMode("LOCAL")
             }
         }
+    }
+
+    fun selectActiveVoskLanguage(code: String) {
+        settingsRepository.setActiveLocalLanguage(code)
+        activeVoskLanguage = code
+        refreshDownloadedVoskLanguages()
+    }
+
+    fun refreshDownloadedVoskLanguages() {
+        val app = appCtx
+        val set = mutableSetOf<String>()
+        for (m in availableVoskModels) {
+            val targetDir = java.io.File(app.filesDir, "vosk-model-${m.code}")
+            val hasModel = targetDir.exists() && targetDir.isDirectory && 
+                           (targetDir.list()?.isNotEmpty() ?: false)
+            if (hasModel) {
+                set.add(m.code)
+            }
+        }
+        if (set.isNotEmpty()) {
+            settingsRepository.setWhisperLocalDownloaded(true)
+            isWhisperLocalDownloaded = true
+        } else {
+            val legacyDir = java.io.File(app.filesDir, "vosk-model")
+            val hasLegacy = legacyDir.exists() && legacyDir.isDirectory && 
+                             (legacyDir.list()?.isNotEmpty() ?: false)
+            if (hasLegacy) {
+                set.add("es")
+                settingsRepository.setWhisperLocalDownloaded(true)
+                isWhisperLocalDownloaded = true
+            } else {
+                settingsRepository.setWhisperLocalDownloaded(false)
+                isWhisperLocalDownloaded = false
+            }
+        }
+        downloadedVoskLanguages = set
     }
 
     fun updateWhisperMode(value: String) {
@@ -103,67 +190,133 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    var isDarkTheme by mutableStateOf(settingsRepository.getDarkThemeEnabled())
-        private set
-    var appLanguage by mutableStateOf(settingsRepository.getLanguage())
-        private set
-
-    // Local Whisper model state
-    var isWhisperLocalDownloaded by mutableStateOf(settingsRepository.isWhisperLocalDownloaded())
-        private set
-    var isDownloadingLocalWhisper by mutableStateOf(false)
-        private set
-    var localWhisperDownloadProgress by mutableStateOf(0f)
-        private set
-    var localWhisperDownloadStatus by mutableStateOf("")
-        private set
-
-    fun downloadLocalWhisper(onSuccess: (String) -> Unit, onError: (String) -> Unit) {
+    fun downloadLocalWhisper(langCode: String, onSuccess: (String) -> Unit, onError: (String) -> Unit) {
         if (isDownloadingLocalWhisper) return
+        val targetModel = availableVoskModels.find { it.code == langCode } ?: return
         isDownloadingLocalWhisper = true
+        downloadingLocalWhisperLangCode = langCode
         localWhisperDownloadProgress = 0f
         localWhisperDownloadStatus = "Conectando al servidor..."
         
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                kotlinx.coroutines.delay(600)
-                localWhisperDownloadProgress = 0.15f
-                localWhisperDownloadStatus = "Descargando whisper-tiny (96 MB)..."
+                val client = okhttp3.OkHttpClient()
+                val request = okhttp3.Request.Builder().url(targetModel.url).build()
+                val response = client.newCall(request).execute()
                 
-                kotlinx.coroutines.delay(800)
-                localWhisperDownloadProgress = 0.45f
-                localWhisperDownloadStatus = "Descargando de red (43 MB)..."
+                if (!response.isSuccessful) {
+                    throw java.io.IOException("Error del servidor: ${response.code}")
+                }
                 
-                kotlinx.coroutines.delay(800)
-                localWhisperDownloadProgress = 0.80f
-                localWhisperDownloadStatus = "Descargando de red (77 MB)..."
+                val body = response.body ?: throw java.io.IOException("Respuesta vacía del servidor")
+                val contentLength = body.contentLength()
+                val inputStream = body.byteStream()
                 
-                kotlinx.coroutines.delay(700)
-                localWhisperDownloadProgress = 0.95f
-                localWhisperDownloadStatus = "Instalando archivos..."
+                val destFile = java.io.File(appCtx.cacheDir, "vosk_model_${langCode}_temp.zip")
+                val outputStream = java.io.FileOutputStream(destFile)
                 
-                kotlinx.coroutines.delay(500)
-                localWhisperDownloadProgress = 1.0f
-                localWhisperDownloadStatus = "Verificando firmas de integridad..."
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                var totalBytesRead = 0L
                 
-                kotlinx.coroutines.delay(400)
-                settingsRepository.setWhisperLocalDownloaded(true)
-                isWhisperLocalDownloaded = true
-                isDownloadingLocalWhisper = false
-                onSuccess("Modelo Whisper Local descargado con éxito.")
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead
+                    if (contentLength > 0) {
+                        val progress = totalBytesRead.toFloat() / contentLength.toFloat()
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            localWhisperDownloadProgress = progress * 0.9f // reserve 10% for extraction
+                            localWhisperDownloadStatus = "Descargando modelo ${targetModel.displayName} (${(totalBytesRead / (1024 * 1024))} MB / ${(contentLength / (1024 * 1024))} MB)..."
+                        }
+                    }
+                }
+                
+                outputStream.flush()
+                outputStream.close()
+                inputStream.close()
+                
+                // Now extract zip
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    localWhisperDownloadProgress = 0.92f
+                    localWhisperDownloadStatus = "Descomprimiendo archivos..."
+                }
+                
+                val extractDir = java.io.File(appCtx.filesDir, "vosk-model-$langCode")
+                if (extractDir.exists()) {
+                    extractDir.deleteRecursively()
+                }
+                extractDir.mkdirs()
+                
+                unzip(destFile, extractDir)
+                destFile.delete() // Cleanup temporary zip
+                
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    refreshDownloadedVoskLanguages()
+                    isDownloadingLocalWhisper = false
+                    downloadingLocalWhisperLangCode = ""
+                    localWhisperDownloadProgress = 1.0f
+                    localWhisperDownloadStatus = "Listo para usar sin conexión (Offline)"
+                    onSuccess("Modelo de transcripción local (${targetModel.displayName}) descargado e instalado con éxito.")
+                }
             } catch (e: Exception) {
-                isDownloadingLocalWhisper = false
-                onError(e.message ?: "Error en la descarga")
+                e.printStackTrace()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    isDownloadingLocalWhisper = false
+                    downloadingLocalWhisperLangCode = ""
+                    localWhisperDownloadProgress = 0f
+                    localWhisperDownloadStatus = "Error en descarga: ${e.localizedMessage}"
+                    onError("Fallo en descarga: ${e.localizedMessage}")
+                }
             }
         }
     }
 
-    fun deleteLocalWhisper(onDelete: () -> Unit) {
-        settingsRepository.setWhisperLocalDownloaded(false)
-        isWhisperLocalDownloaded = false
-        localWhisperDownloadProgress = 0f
-        localWhisperDownloadStatus = ""
-        onDelete()
+    private fun unzip(zipFile: java.io.File, targetDir: java.io.File) {
+        val zipInputStream = java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile))
+        var zipEntry = zipInputStream.nextEntry
+        while (zipEntry != null) {
+            val newFile = java.io.File(targetDir, zipEntry.name)
+            if (zipEntry.isDirectory) {
+                newFile.mkdirs()
+            } else {
+                newFile.parentFile?.mkdirs()
+                val fos = java.io.FileOutputStream(newFile)
+                val buffer = ByteArray(4096)
+                var len: Int
+                while (zipInputStream.read(buffer).also { len = it } > 0) {
+                    fos.write(buffer, 0, len)
+                }
+                fos.close()
+            }
+            zipInputStream.closeEntry()
+            zipEntry = zipInputStream.nextEntry
+        }
+        zipInputStream.close()
+    }
+
+    fun deleteLocalWhisper(langCode: String, onDelete: () -> Unit) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val extractDir = java.io.File(appCtx.filesDir, "vosk-model-$langCode")
+                if (extractDir.exists()) {
+                    extractDir.deleteRecursively()
+                }
+                if (langCode == "es") {
+                    val legacyDir = java.io.File(appCtx.filesDir, "vosk-model")
+                    if (legacyDir.exists()) {
+                        legacyDir.deleteRecursively()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                refreshDownloadedVoskLanguages()
+                localWhisperDownloadProgress = 0f
+                localWhisperDownloadStatus = ""
+                onDelete()
+            }
+        }
     }
 
     fun updateDarkTheme(enabled: Boolean) {
@@ -331,7 +484,7 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     // Delete cached files in CacheDir
-                    val cacheDir = getApplication<Application>().cacheDir
+                    val cacheDir = appCtx.cacheDir
                     val tempFiles = cacheDir.listFiles { _, name -> name.contains(jobId) }
                     tempFiles?.forEach { it.delete() }
                 }
@@ -357,7 +510,7 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // Delete entire local cache directories for temp videos
-                val cacheDir = getApplication<Application>().cacheDir
+                val cacheDir = appCtx.cacheDir
                 val tempFiles = cacheDir.listFiles { _, name -> name.contains("temp_video_") }
                 tempFiles?.forEach { it.delete() }
             } catch (e: Exception) {
