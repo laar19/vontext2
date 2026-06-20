@@ -140,7 +140,7 @@ class VideoProcessor(
                     val progressPercent = 20 + ((index.toFloat() / stepTimesMs.size) * 30).toInt()
                     onProgressUpdate(progressPercent, "Extrayendo frame ${index + 1} de ${stepTimesMs.size}...")
 
-                    val bitmap = retriever.getFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    val bitmap = retriever.getFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
                         ?: retriever.getFrameAtTime(timeMs * 1000)
                     
                     if (bitmap != null) {
@@ -396,7 +396,7 @@ class VideoProcessor(
                     stepTimesMs.forEachIndexed { frameIdx, timeMs ->
                         coroutineContext.ensureActive()
                         val bitmap = try {
-                            retriever.getFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            retriever.getFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
                                 ?: retriever.getFrameAtTime(timeMs * 1000)
                         } catch (e: Exception) {
                             null
@@ -911,6 +911,75 @@ class VideoProcessor(
         }
     }
 
+    private fun writeWavHeader(out: java.io.OutputStream, totalAudioLen: Long, totalDataLen: Long, longSampleRate: Long, channels: Int, byteRate: Long) {
+        val header = ByteArray(44)
+        header[0] = 'R'.toByte() // RIFF/WAVE File Header
+        header[1] = 'I'.toByte()
+        header[2] = 'F'.toByte()
+        header[3] = 'F'.toByte()
+        header[4] = (totalDataLen and 0xffL).toByte()
+        header[5] = ((totalDataLen shr 8) and 0xffL).toByte()
+        header[6] = ((totalDataLen shr 16) and 0xffL).toByte()
+        header[7] = ((totalDataLen shr 24) and 0xffL).toByte()
+        header[8] = 'W'.toByte()
+        header[9] = 'A'.toByte()
+        header[10] = 'V'.toByte()
+        header[11] = 'E'.toByte()
+        header[12] = 'f'.toByte() // 'fmt ' chunk
+        header[13] = 'm'.toByte()
+        header[14] = 't'.toByte()
+        header[15] = ' '.toByte()
+        header[16] = 16 // 4 bytes: size of 'fmt ' chunk
+        header[17] = 0
+        header[18] = 0
+        header[19] = 0
+        header[20] = 1 // format = 1 (PCM)
+        header[21] = 0
+        header[22] = channels.toByte()
+        header[23] = 0
+        header[24] = (longSampleRate and 0xffL).toByte()
+        header[25] = ((longSampleRate shr 8) and 0xffL).toByte()
+        header[26] = ((longSampleRate shr 16) and 0xffL).toByte()
+        header[27] = ((longSampleRate shr 24) and 0xffL).toByte()
+        header[28] = (byteRate and 0xffL).toByte()
+        header[29] = ((byteRate shr 8) and 0xffL).toByte()
+        header[30] = ((byteRate shr 16) and 0xffL).toByte()
+        header[31] = ((byteRate shr 24) and 0xffL).toByte()
+        header[32] = (channels * 2).toByte() // block align
+        header[33] = 0
+        header[34] = 16 // bits per sample
+        header[35] = 0
+        header[36] = 'd'.toByte() // 'data' chunk
+        header[37] = 'a'.toByte()
+        header[38] = 't'.toByte()
+        header[39] = 'a'.toByte()
+        header[40] = (totalAudioLen and 0xffL).toByte()
+        header[41] = ((totalAudioLen shr 8) and 0xffL).toByte()
+        header[42] = ((totalAudioLen shr 16) and 0xffL).toByte()
+        header[43] = ((totalAudioLen shr 24) and 0xffL).toByte()
+        out.write(header, 0, 44)
+    }
+
+    private fun convertPcmToWav(pcmFile: File, wavFile: File, sampleRate: Long = 16000, channels: Int = 1) {
+        val totalAudioLen = pcmFile.length()
+        val totalDataLen = totalAudioLen + 36
+        val byteRate = sampleRate * channels * 2
+
+        val pcmInputStream = pcmFile.inputStream()
+        val wavOutputStream = wavFile.outputStream()
+
+        writeWavHeader(wavOutputStream, totalAudioLen, totalDataLen, sampleRate, channels, byteRate)
+
+        val buffer = ByteArray(4096)
+        var bytesRead: Int
+        while (pcmInputStream.read(buffer).also { bytesRead = it } != -1) {
+            wavOutputStream.write(buffer, 0, bytesRead)
+        }
+
+        pcmInputStream.close()
+        wavOutputStream.close()
+    }
+
     private fun executeRemoteWhisper(videoFile: File, apiKey: String, baseUrl: String, model: String): String {
         val client = OkHttpClient.Builder()
             .connectTimeout(90, TimeUnit.SECONDS)
@@ -918,22 +987,88 @@ class VideoProcessor(
             .readTimeout(90, TimeUnit.SECONDS)
             .build()
 
-        // Extract audio track to make upload 100x faster and bullet-proof
-        val tempAudioFile = File(videoFile.parent, "extracted_audio_${System.currentTimeMillis()}.m4a")
-        val extractSuccess = extractAudioTrack(videoFile, tempAudioFile)
-        val fileToUpload = if (extractSuccess && tempAudioFile.exists() && tempAudioFile.length() > 0) {
-            tempAudioFile
+        val tempPcmFile = File(context.cacheDir, "temp_audio_${System.currentTimeMillis()}.pcm")
+        val tempWavFile = File(context.cacheDir, "temp_audio_${System.currentTimeMillis()}.wav")
+
+        var extractSuccess = false
+        try {
+            extractSuccess = decodeAndResampleAudio(videoFile, tempPcmFile)
+            if (extractSuccess && tempPcmFile.exists() && tempPcmFile.length() > 0L) {
+                convertPcmToWav(tempPcmFile, tempWavFile, 16000L, 1)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            extractSuccess = false
+        } finally {
+            if (tempPcmFile.exists()) {
+                tempPcmFile.delete()
+            }
+        }
+
+        val fileToUpload = if (extractSuccess && tempWavFile.exists() && tempWavFile.length() > 0L) {
+            tempWavFile
         } else {
-            // fallback to original video file if extraction fails
             videoFile
         }
 
-        val mediaType = if (fileToUpload == tempAudioFile) {
-            "audio/m4a".toMediaTypeOrNull()
+        val mediaType = if (fileToUpload == tempWavFile) {
+            "audio/wav".toMediaTypeOrNull()
         } else {
             "video/mp4".toMediaTypeOrNull()
         }
 
+        try {
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("model", model)
+                .addFormDataPart("response_format", "verbose_json")
+                .addFormDataPart(
+                    "file",
+                    fileToUpload.name,
+                    fileToUpload.asRequestBody(mediaType)
+                )
+                .build()
+
+            val request = Request.Builder()
+                .url(if (baseUrl.endsWith("/")) "${baseUrl}audio/transcriptions" else "$baseUrl/audio/transcriptions")
+                .header("Authorization", "Bearer $apiKey")
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val jsonStr = response.body?.string() ?: ""
+                    if (jsonStr.isNotEmpty()) {
+                        val json = JSONObject(jsonStr)
+                        if (json.has("segments")) {
+                            val segments = json.getJSONArray("segments")
+                            val sb = StringBuilder()
+                            for (i in 0 until segments.length()) {
+                                val seg = segments.getJSONObject(i)
+                                val start = seg.optDouble("start", 0.0)
+                                val text = seg.optString("text", "")
+                                if (text.isNotBlank()) {
+                                    val min = (start / 60).toInt()
+                                    val sec = (start % 60).toInt()
+                                    sb.append(String.format("[%02d:%02d] %s\n", min, sec, text.trim()))
+                                }
+                            }
+                            if (sb.isNotEmpty()) {
+                                return sb.toString()
+                            }
+                        }
+                        val mainText = json.optString("text", "")
+                        if (mainText.isNotEmpty()) {
+                            return mainText
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // Fallback retry using standard response format if verbose_json failed or couldn't resolve segments
         try {
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -961,9 +1096,8 @@ class VideoProcessor(
                 return json.optString("text", "")
             }
         } finally {
-            // Clean up temp audio file
-            if (tempAudioFile.exists()) {
-                tempAudioFile.delete()
+            if (tempWavFile.exists()) {
+                tempWavFile.delete()
             }
         }
     }
@@ -1071,7 +1205,7 @@ class VideoProcessor(
 
                 // Match specific transcript based on timestamps
                 val seconds = frame.timestampMs / 1000f
-                val relevantSnippet = extractSegmentForTime(transcriptionText, seconds)
+                val relevantSnippet = extractSegmentForTime(transcriptionText, seconds, frames)
                 
                 var snippetY = textY + 20f
                 val lines = relevantSnippet.split("\n")
@@ -1102,13 +1236,12 @@ class VideoProcessor(
         document.close()
     }
 
-    private fun extractSegmentForTime(fullText: String, seconds: Float): String {
+    private fun extractSegmentForTime(fullText: String, seconds: Float, allFrames: List<FrameInfo>): String {
         val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ""
 
-        // Try to find the closest line that has a timestamp
-        var closestLine: String? = null
-        var minDiff = Float.MAX_VALUE
+        val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
+        if (frameTimeSecs.isEmpty()) return fullText
 
         val matchedLines = mutableListOf<String>()
 
@@ -1120,13 +1253,20 @@ class VideoProcessor(
                     val min = parts.getOrNull(0)?.toIntOrNull() ?: 0
                     val sec = parts.getOrNull(1)?.toIntOrNull() ?: 0
                     val lineSec = min * 60 + sec
-                    val diff = Math.abs(lineSec - seconds)
-                    if (diff < minDiff) {
-                        minDiff = diff
-                        closestLine = line
+
+                    // Find which frame is closest to lineSec
+                    var closestFrameTime = frameTimeSecs[0]
+                    var minDiff = Math.abs(frameTimeSecs[0] - lineSec)
+                    for (ft in frameTimeSecs) {
+                        val diff = Math.abs(ft - lineSec)
+                        if (diff < minDiff) {
+                            minDiff = diff
+                            closestFrameTime = ft
+                        }
                     }
-                    // If we want very close match (3 seconds)
-                    if (diff <= 3) {
+
+                    // If this frame (seconds) is the closest frame to the line, include it!
+                    if (Math.abs(closestFrameTime - seconds) < 0.01f) {
                         matchedLines.add(line)
                     }
                 }
@@ -1136,19 +1276,26 @@ class VideoProcessor(
         if (matchedLines.isNotEmpty()) {
             return matchedLines.joinToString("\n")
         }
-        if (closestLine != null) {
-            return closestLine
+
+        // If the entire text has NO timestamps at all (e.g. standard JSON/text fallback without any segments)
+        val hasAnyTimestamp = lines.any { it.contains("[") && it.contains("]") && it.substringAfter("[").substringBefore("]").contains(":") }
+        if (!hasAnyTimestamp) {
+            val frameIndex = allFrames.indexOfFirst { Math.abs((it.timestampMs / 1000f) - seconds) < 0.01f }
+            if (frameIndex != -1) {
+                val words = fullText.split(Regex("\\s+")).filter { it.isNotEmpty() }
+                if (words.isNotEmpty()) {
+                    val wordsPerFrame = Math.ceil(words.size.toDouble() / allFrames.size).toInt()
+                    val startIdx = frameIndex * wordsPerFrame
+                    val endIdx = Math.min(words.size, startIdx + wordsPerFrame)
+                    if (startIdx < words.size) {
+                        return words.subList(startIdx, endIdx).joinToString(" ")
+                    }
+                }
+            }
+            return ""
         }
 
-        // Fallback for non-timestamp paragraphs
-        if (fullText.length > 300) {
-            val length = fullText.length
-            val ratio = seconds / (fullText.length / 50f)
-            val start = Math.max(0, (ratio * 150).toInt())
-            val end = Math.min(length, start + 250)
-            return "..." + fullText.substring(start, end) + "..."
-        }
-        return fullText
+        return ""
     }
 
     private fun createZip(srcFolder: File, destZipFile: File) {
