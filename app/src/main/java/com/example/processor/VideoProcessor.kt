@@ -1219,6 +1219,26 @@ class VideoProcessor(
         return rawText.replace(Regex("<[^>]+>"), "")
     }
 
+    private fun parseTimeString(str: String): Float? {
+        try {
+            val cleanStr = str.replace(",", ".").trim()
+            val parts = cleanStr.split(":")
+            if (parts.size == 3) {
+                val hrs = parts[0].toFloatOrNull() ?: 0f
+                val mins = parts[1].toFloatOrNull() ?: 0f
+                val secs = parts[2].toFloatOrNull() ?: 0f
+                return hrs * 3600f + mins * 60f + secs
+            } else if (parts.size == 2) {
+                val mins = parts[0].toFloatOrNull() ?: 0f
+                val secs = parts[1].toFloatOrNull() ?: 0f
+                return mins * 60f + secs
+            } else if (parts.size == 1) {
+                return parts[0].toFloatOrNull()
+            }
+        } catch (e: Exception) {}
+        return null
+    }
+
     private fun extractSegmentForTime(fullText: String, seconds: Float, allFrames: List<FrameInfo>): String {
         val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ""
@@ -1226,17 +1246,91 @@ class VideoProcessor(
         val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
         if (frameTimeSecs.isEmpty()) return ""
 
-        // Detect if there's any line with a timestamp
-        val hasAnyTimestamp = lines.any { line ->
-            line.contains(Regex("<\\d+(?:\\.\\d+)?-\\d+(?:\\.\\d+)?>")) || 
-            line.contains(Regex("\\[\\d+:\\d+\\]")) ||
-            line.contains(Regex("\\[\\d+:\\d+:\\d+\\]"))
+        val targetFrame = allFrames.minByOrNull { Math.abs((it.timestampMs / 1000f) - seconds) } ?: return ""
+
+        data class TranscriptSegment(
+            val start: Float,
+            val end: Float,
+            val text: String
+        )
+
+        val segments = mutableListOf<TranscriptSegment>()
+
+        // 1) SRT/VTT parsing if "-->" is found
+        if (fullText.contains("-->")) {
+            val blocks = fullText.split(Regex("(?:\r?\n){2,}")).map { it.trim() }.filter { it.isNotEmpty() }
+            for (block in blocks) {
+                val blockLines = block.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                if (blockLines.size >= 2) {
+                    var timeLineIdx = -1
+                    for (i in blockLines.indices) {
+                        if (blockLines[i].contains("-->")) {
+                            timeLineIdx = i
+                            break
+                        }
+                    }
+                    if (timeLineIdx != -1) {
+                        val timeLine = blockLines[timeLineIdx]
+                        val textLines = blockLines.subList(timeLineIdx + 1, blockLines.size)
+                        val text = textLines.joinToString(" ").trim()
+
+                        val parts = timeLine.split("-->").map { it.trim() }
+                        if (parts.size >= 2) {
+                            val startSec = parseTimeString(parts[0])
+                            val endSec = parseTimeString(parts[1])
+                            if (startSec != null && endSec != null) {
+                                segments.add(TranscriptSegment(startSec, endSec, text))
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        if (!hasAnyTimestamp) {
-            // Fallback: distribute lines proportionally across frames
+        // 2) Standard line-by-line parsing if segments list remains empty
+        if (segments.isEmpty()) {
+            for (line in lines) {
+                var start: Float? = null
+                var end: Float? = null
+                var cleanText = line
+
+                // Match <start-end> format
+                val tagMatch = Regex("<(\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)>").find(line)
+                if (tagMatch != null) {
+                    start = tagMatch.groupValues[1].toFloatOrNull()
+                    end = tagMatch.groupValues[2].toFloatOrNull()
+                    cleanText = cleanText.replace(tagMatch.value, "").trim()
+                }
+
+                // Match [HH:MM:SS] or [MM:SS] format
+                val bracketsMatch = Regex("\\[(\\d+):(\\d+)(?::(\\d+))?\\]").find(cleanText)
+                if (bracketsMatch != null) {
+                    val part1 = bracketsMatch.groupValues[1].toIntOrNull() ?: 0
+                    val part2 = bracketsMatch.groupValues[2].toIntOrNull() ?: 0
+                    val part3 = bracketsMatch.groupValues[3].toIntOrNull()
+
+                    val calculatedStart = if (part3 != null) {
+                        (part1 * 3600 + part2 * 60 + part3).toFloat()
+                    } else {
+                        (part1 * 60 + part2).toFloat()
+                    }
+                    if (start == null) {
+                        start = calculatedStart
+                    }
+                    cleanText = cleanText.replace(bracketsMatch.value, "").trim()
+                }
+
+                if (start != null) {
+                    val finalEnd = end ?: (start + 2.5f)
+                    segments.add(TranscriptSegment(start, finalEnd, cleanText))
+                }
+            }
+        }
+
+        if (segments.isEmpty()) {
+            // No recognizable timestamps. Distribute lines proportionally
             val approxLinesPerFrame = Math.ceil(lines.size.toDouble() / allFrames.size).toInt()
-            val frameIndex = allFrames.indexOfFirst { Math.abs((it.timestampMs / 1000f) - seconds) < 0.01f }
+            val frameIndex = allFrames.indexOf(targetFrame)
             if (frameIndex != -1) {
                 val startIdx = frameIndex * approxLinesPerFrame
                 val endIdx = Math.min(lines.size, startIdx + approxLinesPerFrame)
@@ -1247,58 +1341,27 @@ class VideoProcessor(
             return ""
         }
 
-        // Each line that has a timestamp gets mapped to the absolute closest frame.
-        // We will collect the lines that are assigned to the current 'seconds' frame.
+        // 3) Timestamp scaling detection
+        var finalSegments = segments.toList()
+        val maxStart = finalSegments.map { it.start }.maxOrNull() ?: 0f
+        val videoDuration = frameTimeSecs.maxOrNull() ?: 0f
+        if (videoDuration > 3.0f && maxStart > 0f && maxStart < 1.0f) {
+            // Timestamps are scaled down (e.g. divided by 1000 twice by bugged integrations). Let's scale up.
+            finalSegments = finalSegments.map { seg ->
+                TranscriptSegment(seg.start * 1000f, seg.end * 1000f, seg.text)
+            }
+        }
+
+        // 4) Map each segment to the closest frame of the video
         val matchedLines = mutableListOf<String>()
-
-        for (line in lines) {
-            var lineSec: Float? = null
-
-            // 1) Match <start-end> format
-            val tagMatch = Regex("<(\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)>").find(line)
-            if (tagMatch != null) {
-                lineSec = tagMatch.groupValues[1].toFloatOrNull()
-            }
-
-            // 2) If not found, match [HH:MM:SS] format
-            if (lineSec == null) {
-                val hmsMatch = Regex("\\[(\\d+):(\\d+):(\\d+)\\]").find(line)
-                if (hmsMatch != null) {
-                    val hrs = hmsMatch.groupValues[1].toIntOrNull() ?: 0
-                    val mins = hmsMatch.groupValues[2].toIntOrNull() ?: 0
-                    val secs = hmsMatch.groupValues[3].toIntOrNull() ?: 0
-                    lineSec = (hrs * 3600 + mins * 60 + secs).toFloat()
-                }
-            }
-
-            // 3) If not found, match [MM:SS] format
-            if (lineSec == null) {
-                val msMatch = Regex("\\[(\\d+):(\\d+)\\]").find(line)
-                if (msMatch != null) {
-                    val mins = msMatch.groupValues[1].toIntOrNull() ?: 0
-                    val secs = msMatch.groupValues[2].toIntOrNull() ?: 0
-                    lineSec = (mins * 60 + secs).toFloat()
-                }
-            }
-
-            if (lineSec != null) {
-                // Find the frame in allFrames that is closest to lineSec
-                var closestFrameTime = frameTimeSecs[0]
-                var minDiff = Math.abs(frameTimeSecs[0] - lineSec)
-                for (ft in frameTimeSecs) {
-                    val diff = Math.abs(ft - lineSec)
-                    if (diff < minDiff) {
-                        minDiff = diff
-                        closestFrameTime = ft
-                    }
-                }
-
-                // If this page's frame (seconds) is indeed the closest one, include this line!
-                if (Math.abs(closestFrameTime - seconds) < 0.01f) {
-                    // Clean the "<startTime-endTime>" tag from the printed output so it looks clean (like [00:04] Text)
-                    val cleanLine = line.replace(Regex("<\\d+(?:\\.\\d+)?-\\d+(?:\\.\\d+)?>"), "").trim()
-                    matchedLines.add(cleanLine)
-                }
+        for (seg in finalSegments) {
+            val closestFrame = allFrames.minByOrNull { Math.abs((it.timestampMs / 1000f) - seg.start) }
+            if (closestFrame != null && closestFrame.frameNum == targetFrame.frameNum) {
+                val totalSec = seg.start.toInt()
+                val min = totalSec / 60
+                val sec = totalSec % 60
+                val timeStr = String.format(java.util.Locale.US, "[%02d:%02d]", min, sec)
+                matchedLines.add("$timeStr ${seg.text}")
             }
         }
 
