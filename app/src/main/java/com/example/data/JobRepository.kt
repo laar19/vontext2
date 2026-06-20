@@ -7,6 +7,8 @@ class JobRepository(private val jobDao: JobDao) {
 
     fun getJobById(jobId: String): Flow<Job?> = jobDao.getJobById(jobId)
 
+    suspend fun getJobByIdSync(jobId: String): Job? = jobDao.getJobByIdSync(jobId)
+
     suspend fun insertJob(job: Job) = jobDao.insertJob(job)
 
     suspend fun updateJob(job: Job) = jobDao.updateJob(job)

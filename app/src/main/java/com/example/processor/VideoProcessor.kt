@@ -558,13 +558,18 @@ class VideoProcessor(
                 onProgressUpdate(60, "Analizando con Gemini (${selectedModel.name})...")
                 val apiKey = selectedModel.apiKey
                 if (apiKey.isEmpty()) {
-                    onProgressUpdate(60, "API key no disponible. Usando estimación...")
+                    onProgressUpdate(60, "Error: API key vacía. Usando estimación...")
+                    "**[ERROR DE CONFIGURACIÓN]**\nLa API Key para Gemini (${selectedModel.name}) está vacía en Ajustes.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
                 } else {
                     try {
                         executeGeminiMultimodal(extractedFrames, notes, apiKey, selectedModel.endpoint, selectedModel.modelName)
                     } catch (e: Exception) {
-                        onProgressUpdate(60, "Error en Gemini API: ${e.message}. Usando estimación...")
+                        onProgressUpdate(60, "Error en Gemini API: ${e.message}")
+                        "**[ERROR EN LLAMADA GEMINI API - ${selectedModel.name}]**\n" +
+                        "La llamada no se completó debido al siguiente error: ${e.localizedMessage}. " +
+                        "Por favor verifica la API Key, el endpoint o si el modelo '${selectedModel.modelName}' es soportado.\n\n" +
+                        "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
                     }
                 }
@@ -572,7 +577,8 @@ class VideoProcessor(
                 if (hasAudio) {
                     val apiKey = selectedModel.apiKey
                     if (apiKey.isEmpty()) {
-                        onProgressUpdate(60, "API key no configurada. Usando de estimación...")
+                        onProgressUpdate(60, "Error: API key vacía. Usando de estimación...")
+                        "**[ERROR DE CONFIGURACIÓN]**\nLa API Key para Whisper (${selectedModel.name}) está vacía en Ajustes.\n\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
                     } else {
                         try {
@@ -584,7 +590,10 @@ class VideoProcessor(
                                 selectedModel.modelName
                             )
                         } catch (e: Exception) {
-                            onProgressUpdate(60, "Error en API remota: ${e.message}. Usando estimación...")
+                            onProgressUpdate(60, "Error en API Whisper: ${e.message}")
+                            "**[ERROR EN TRANSCRIPCIÓN WHISPER REMOTE - ${selectedModel.name}]**\n" +
+                            "Error: ${e.localizedMessage}. Confirma si tu API Key, endpoint de red '${selectedModel.endpoint}' o el nombre del modelo '${selectedModel.modelName}' son correctos.\n\n" +
+                            "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                             generateFallbackTranscript(notes, durationSec, extractedFrames)
                         }
                     }
@@ -600,13 +609,17 @@ class VideoProcessor(
                 val buildConfigKey = com.example.BuildConfig.GEMINI_API_KEY
                 val geminiKey = if (buildConfigKey.isNotBlank() && buildConfigKey != "MY_GEMINI_API_KEY" && buildConfigKey.length > 10) buildConfigKey else settingsRepository.getApiKey()
                 if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
-                    onProgressUpdate(60, "Gemini API key no disponible. Usando estimación...")
+                    onProgressUpdate(60, "API key no disponible. Usando estimación...")
+                    "**[ERROR DE CONFIGURACIÓN]**\nNo se ha configurado la API Key de Gemini en los ajustes o BuildConfig.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
                 } else {
                     try {
-                        executeGeminiMultimodal(extractedFrames, notes, geminiKey, "", "gemini-3.5-flash")
+                        executeGeminiMultimodal(extractedFrames, notes, geminiKey, "", "gemini-1.5-flash")
                     } catch (e: Exception) {
-                        onProgressUpdate(60, "Error en Gemini API: ${e.message}. Usando estimación...")
+                        onProgressUpdate(60, "Error en Gemini API: ${e.message}")
+                        "**[ERROR EN GEMINI API PLATA-FORMA]**\n" +
+                        "Error: ${e.localizedMessage}.\n\n" +
+                        "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
                     }
                 }
@@ -614,6 +627,7 @@ class VideoProcessor(
                 val apiKey = settingsRepository.getApiKey()
                 if (apiKey.isEmpty()) {
                     onProgressUpdate(60, "API key no configurada. Usando estimación...")
+                    "**[ERROR DE CONFIGURACIÓN]**\nNo se ha configurado la API Key de Whisper estándar de Ajustes.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
                 } else {
                     try {
@@ -625,7 +639,10 @@ class VideoProcessor(
                             settingsRepository.getModel()
                         )
                     } catch (e: Exception) {
-                        onProgressUpdate(60, "Error en API remota: ${e.message}. Usando estimación...")
+                        onProgressUpdate(60, "Error en API remota: ${e.message}")
+                        "**[ERROR EN WHISPER REMOTO ESTÁNDAR]**\n" +
+                        "Error: ${e.localizedMessage}.\n\n" +
+                        "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
                     }
                 }
@@ -729,7 +746,7 @@ class VideoProcessor(
 
         val requestBody = jsonRequest.toString().toRequestBody("application/json".toMediaTypeOrNull())
 
-        val finalModel = if (modelName.isNotBlank()) modelName else "gemini-3.5-flash"
+        val finalModel = if (modelName.isNotBlank()) modelName else "gemini-1.5-flash"
         val requestUrl = if (endpoint.isNotBlank() && endpoint != "https://api.openai.com/v1" && endpoint != "https://generativelanguage.googleapis.com") {
             if (endpoint.contains("models/")) {
                 "$endpoint?key=$apiKey"
@@ -762,38 +779,117 @@ class VideoProcessor(
         }
     }
 
-    private fun executeRemoteWhisper(videoFile: File, apiKey: String, baseUrl: String, model: String): String {
-        // OpenAI multi-part request for audio transcriptions accepts video files directly up to 25MB!
-        val client = OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .build()
-
-        val requestBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("model", model)
-            .addFormDataPart(
-                "file",
-                videoFile.name,
-                videoFile.asRequestBody("video/mp4".toMediaTypeOrNull())
-            )
-            .build()
-
-        val request = Request.Builder()
-            .url("$baseUrl/audio/transcriptions")
-            .header("Authorization", "Bearer $apiKey")
-            .post(requestBody)
-            .build()
-
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val errorBody = response.body?.string() ?: ""
-                throw Exception("HTTP ${response.code}: $errorBody")
+    private fun extractAudioTrack(videoFile: File, outputFile: File): Boolean {
+        val extractor = android.media.MediaExtractor()
+        var muxer: android.media.MediaMuxer? = null
+        try {
+            extractor.setDataSource(videoFile.absolutePath)
+            var audioTrackIndex = -1
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    extractor.selectTrack(i)
+                    break
+                }
             }
-            val jsonStr = response.body?.string() ?: throw Exception("Respuesta de API vacía")
-            val json = JSONObject(jsonStr)
-            return json.optString("text", "")
+            if (audioTrackIndex == -1) {
+                return false
+            }
+            val format = extractor.getTrackFormat(audioTrackIndex)
+            muxer = android.media.MediaMuxer(outputFile.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val writeTrackIndex = muxer.addTrack(format)
+            muxer.start()
+
+            val maxBufferSize = if (format.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                format.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE)
+            } else {
+                64 * 1024
+            }
+            val buffer = java.nio.ByteBuffer.allocate(maxBufferSize)
+            val bufferInfo = android.media.MediaCodec.BufferInfo()
+
+            while (true) {
+                bufferInfo.offset = 0
+                bufferInfo.size = extractor.readSampleData(buffer, 0)
+                if (bufferInfo.size < 0) {
+                    break
+                }
+                bufferInfo.presentationTimeUs = extractor.sampleTime
+                bufferInfo.flags = extractor.sampleFlags
+                muxer.writeSampleData(writeTrackIndex, buffer, bufferInfo)
+                extractor.advance()
+            }
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        } finally {
+            try {
+                extractor.release()
+            } catch (e: Exception) {}
+            try {
+                muxer?.stop()
+                muxer?.release()
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun executeRemoteWhisper(videoFile: File, apiKey: String, baseUrl: String, model: String): String {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .build()
+
+        // Extract audio track to make upload 100x faster and bullet-proof
+        val tempAudioFile = File(videoFile.parent, "extracted_audio_${System.currentTimeMillis()}.m4a")
+        val extractSuccess = extractAudioTrack(videoFile, tempAudioFile)
+        val fileToUpload = if (extractSuccess && tempAudioFile.exists() && tempAudioFile.length() > 0) {
+            tempAudioFile
+        } else {
+            // fallback to original video file if extraction fails
+            videoFile
+        }
+
+        val mediaType = if (fileToUpload == tempAudioFile) {
+            "audio/m4a".toMediaTypeOrNull()
+        } else {
+            "video/mp4".toMediaTypeOrNull()
+        }
+
+        try {
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("model", model)
+                .addFormDataPart(
+                    "file",
+                    fileToUpload.name,
+                    fileToUpload.asRequestBody(mediaType)
+                )
+                .build()
+
+            val request = Request.Builder()
+                .url(if (baseUrl.endsWith("/")) "${baseUrl}audio/transcriptions" else "$baseUrl/audio/transcriptions")
+                .header("Authorization", "Bearer $apiKey")
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: ""
+                    throw Exception("HTTP ${response.code}: $errorBody")
+                }
+                val jsonStr = response.body?.string() ?: throw Exception("Respuesta de API vacía")
+                val json = JSONObject(jsonStr)
+                return json.optString("text", "")
+            }
+        } finally {
+            // Clean up temp audio file
+            if (tempAudioFile.exists()) {
+                tempAudioFile.delete()
+            }
         }
     }
 

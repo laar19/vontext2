@@ -11,6 +11,9 @@ interface JobDao {
     @Query("SELECT * FROM jobs WHERE jobId = :jobId")
     fun getJobById(jobId: String): Flow<Job?>
 
+    @Query("SELECT * FROM jobs WHERE jobId = :jobId")
+    suspend fun getJobByIdSync(jobId: String): Job?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertJob(job: Job)
 

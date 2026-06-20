@@ -295,13 +295,74 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteJob(jobId: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val job = jobRepository.getJobByIdSync(jobId)
+                if (job != null) {
+                    // Delete PDF file
+                    if (!job.pdfPath.isNullOrEmpty()) {
+                        val pdfFile = java.io.File(job.pdfPath)
+                        if (pdfFile.exists()) {
+                            pdfFile.delete()
+                        }
+                    }
+                    // Delete ZIP file
+                    if (!job.zipPath.isNullOrEmpty()) {
+                        val zipFile = java.io.File(job.zipPath)
+                        if (zipFile.exists()) {
+                            zipFile.delete()
+                        }
+                    }
+                    // Delete job directory (e.g. parentDir/job_$jobId)
+                    val parentDir = java.io.File(
+                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                        "Vontext"
+                    )
+                    val outputDir = java.io.File(parentDir, "job_$jobId")
+                    if (outputDir.exists()) {
+                        outputDir.deleteRecursively()
+                    }
+
+                    // Also delete any other potential ZIP matching the jobId
+                    val searchZipName = "Vontext_${jobId.take(6)}.zip"
+                    val probableZipFile = java.io.File(parentDir, searchZipName)
+                    if (probableZipFile.exists()) {
+                        probableZipFile.delete()
+                    }
+
+                    // Delete cached files in CacheDir
+                    val cacheDir = getApplication<Application>().cacheDir
+                    val tempFiles = cacheDir.listFiles { _, name -> name.contains(jobId) }
+                    tempFiles?.forEach { it.delete() }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             jobRepository.deleteJob(jobId)
         }
     }
 
     fun clearAllJobs() {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                // Delete everything in output directory
+                val parentDir = java.io.File(
+                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                    "Vontext"
+                )
+                if (parentDir.exists()) {
+                    parentDir.deleteRecursively()
+                    // Re-create the folder so it's fresh and ready for next jobs
+                    parentDir.mkdirs()
+                }
+
+                // Delete entire local cache directories for temp videos
+                val cacheDir = getApplication<Application>().cacheDir
+                val tempFiles = cacheDir.listFiles { _, name -> name.contains("temp_video_") }
+                tempFiles?.forEach { it.delete() }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             jobRepository.clearAllJobs()
         }
     }

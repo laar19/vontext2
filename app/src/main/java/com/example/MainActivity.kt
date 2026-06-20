@@ -687,7 +687,7 @@ fun HomeTabContent(viewModel: VideoViewModel, context: Context) {
                                         color = CharcoalText
                                     )
                                     Text(
-                                        text = txt("Multimodal y rápido (gemini-3.5-flash)"),
+                                        text = txt("Multimodal y rápido (gemini-1.5-flash)"),
                                         fontSize = 12.sp,
                                         color = MutedGray
                                     )
@@ -1277,7 +1277,7 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
             var newModelType by remember { mutableStateOf("GEMINI") } // "GEMINI" or "OPENAI_COMPATIBLE"
             var newModelApiKey by remember { mutableStateOf("") }
             var newModelEndpoint by remember { mutableStateOf("https://generativelanguage.googleapis.com") }
-            var newModelNameCode by remember { mutableStateOf("gemini-3.5-flash") }
+            var newModelNameCode by remember { mutableStateOf("gemini-1.5-flash") }
             var isDropdownExpanded by remember { mutableStateOf(false) }
 
             Card(
@@ -1331,7 +1331,7 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                                             newModelEndpoint = "https://generativelanguage.googleapis.com"
                                         }
                                         if (newModelNameCode.isEmpty() || newModelNameCode.contains("whisper")) {
-                                            newModelNameCode = "gemini-3.5-flash"
+                                            newModelNameCode = "gemini-1.5-flash"
                                         }
                                         isDropdownExpanded = false
                                     },
@@ -1397,7 +1397,7 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                         OutlinedTextField(
                             value = newModelNameCode,
                             onValueChange = { newModelNameCode = it },
-                            placeholder = { Text(if (newModelType == "GEMINI") "gemini-3.5-flash" else "whisper-1") },
+                            placeholder = { Text(if (newModelType == "GEMINI") "gemini-1.5-flash" else "whisper-1") },
                             modifier = Modifier.fillMaxWidth().testTag("custom_config_model_name_input"),
                             shape = RoundedCornerShape(12.dp)
                         )
@@ -1423,7 +1423,7 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                                 newModelApiKey = ""
                                 if (newModelType == "GEMINI") {
                                     newModelEndpoint = "https://generativelanguage.googleapis.com"
-                                    newModelNameCode = "gemini-3.5-flash"
+                                    newModelNameCode = "gemini-1.5-flash"
                                 } else {
                                     newModelEndpoint = "https://api.openai.com/v1"
                                     newModelNameCode = "whisper-1"
