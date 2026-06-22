@@ -1139,9 +1139,12 @@ class VideoProcessor(
 
         val includeTimestamps = settingsRepository.getIncludeTimestamps()
 
+        // Precompute the mapping of frame indices to transcription lines once to avoid redundant expensive calculations
+        val frameTextMap = precomputeFrameTranscriptMap(transcriptionText, frames)
+
         // --- PAGES: GRID OF FRAMES & TEXT ---
         var pageNum = 1
-        frames.forEach { frame ->
+        frames.forEachIndexed { frameIndex, frame ->
             val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum++).create()
             val page = document.startPage(pageInfo)
             val canvas = page.canvas
@@ -1182,13 +1185,11 @@ class VideoProcessor(
                 // Draw transcription context block below image
                 val textY = (startY + h + 40).toFloat()
 
-                // Match specific transcript based on timestamps
-                val seconds = frame.timestampMs / 1000f
-                val relevantSnippet = extractSegmentForTime(transcriptionText, seconds, frames)
+                // Match specific transcript based on precomputed mapping
+                val relevantSnippetLines = frameTextMap[frameIndex] ?: emptyList()
                 
                 var snippetY = textY
-                val lines = relevantSnippet.split("\n")
-                lines.forEach { line ->
+                relevantSnippetLines.forEach { line ->
                     if (snippetY < pageHeight - 50) {
                         val cleanLine = if (!includeTimestamps) {
                             line.replace(Regex("^\\[\\d{2}:\\d{2}\\]\\s*"), "")
@@ -1239,51 +1240,73 @@ class VideoProcessor(
         return null
     }
 
-    private fun extractSegmentForTime(fullText: String, seconds: Float, allFrames: List<FrameInfo>): String {
+    // Class level cache for transcription parsing to avoid repeating expensive string parsing for every frame
+    @Volatile
+    private var cachedRawText: String? = null
+    private var cachedSegments: List<TranscriptSegment> = emptyList()
+
+    private fun getOrParseSegments(fullText: String, allFrames: List<FrameInfo>): List<TranscriptSegment> {
+        val currentRaw = cachedRawText
+        if (currentRaw != null && currentRaw == fullText) {
+            return cachedSegments
+        }
+        synchronized(this) {
+            if (cachedRawText == fullText) {
+                return cachedSegments
+            }
+            val parsed = parseTranscriptToSegments(fullText, allFrames)
+            cachedSegments = parsed
+            cachedRawText = fullText
+            return parsed
+        }
+    }
+
+    private fun parseTranscriptToSegments(fullText: String, allFrames: List<FrameInfo>): List<TranscriptSegment> {
         val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
-        if (lines.isEmpty()) return ""
+        if (lines.isEmpty()) return emptyList()
 
         val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
-        if (frameTimeSecs.isEmpty()) return ""
-
-        val targetFrame = allFrames.minByOrNull { Math.abs((it.timestampMs / 1000f) - seconds) } ?: return ""
-
-        data class TranscriptSegment(
-            val start: Float,
-            val end: Float,
-            val text: String
-        )
-
         val segments = mutableListOf<TranscriptSegment>()
 
-        // 1) SRT/VTT parsing if "-->" is found
+        // 1) Robust line-by-line SRT/VTT parsing if "-->" is found to avoid double-newline dependencies
         if (fullText.contains("-->")) {
-            val blocks = fullText.split(Regex("(?:\r?\n){2,}")).map { it.trim() }.filter { it.isNotEmpty() }
-            for (block in blocks) {
-                val blockLines = block.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
-                if (blockLines.size >= 2) {
-                    var timeLineIdx = -1
-                    for (i in blockLines.indices) {
-                        if (blockLines[i].contains("-->")) {
-                            timeLineIdx = i
-                            break
-                        }
-                    }
-                    if (timeLineIdx != -1) {
-                        val timeLine = blockLines[timeLineIdx]
-                        val textLines = blockLines.subList(timeLineIdx + 1, blockLines.size)
-                        val text = textLines.joinToString(" ").trim()
-
-                        val parts = timeLine.split("-->").map { it.trim() }
-                        if (parts.size >= 2) {
-                            val startSec = parseTimeString(parts[0])
-                            val endSec = parseTimeString(parts[1])
-                            if (startSec != null && endSec != null) {
+            var i = 0
+            while (i < lines.size) {
+                val line = lines[i]
+                if (line.contains("-->")) {
+                    val parts = line.split("-->").map { it.trim() }
+                    if (parts.size >= 2) {
+                        var startSec = parseTimeString(parts[0])
+                        var endSec = parseTimeString(parts[1])
+                        if (startSec != null && endSec != null) {
+                            if (startSec > endSec) {
+                                val tmp = startSec
+                                startSec = endSec
+                                endSec = tmp
+                            }
+                            // Collect subsequent lines belonging to this subtitle segment
+                            val textLines = mutableListOf<String>()
+                            var j = i + 1
+                            while (j < lines.size) {
+                                val nextLine = lines[j]
+                                if (nextLine.contains("-->")) {
+                                    break
+                                }
+                                // Skip next index numbers if standard block separator exists
+                                if (nextLine.toIntOrNull() != null && j + 1 < lines.size && lines[j + 1].contains("-->")) {
+                                    break
+                                }
+                                textLines.add(nextLine)
+                                j++
+                            }
+                            val text = textLines.joinToString(" ").trim()
+                            if (text.isNotEmpty()) {
                                 segments.add(TranscriptSegment(startSec, endSec, text))
                             }
                         }
                     }
                 }
+                i++
             }
         }
 
@@ -1327,45 +1350,120 @@ class VideoProcessor(
             }
         }
 
-        if (segments.isEmpty()) {
-            // No recognizable timestamps. Distribute lines proportionally
-            val approxLinesPerFrame = Math.ceil(lines.size.toDouble() / allFrames.size).toInt()
-            val frameIndex = allFrames.indexOf(targetFrame)
-            if (frameIndex != -1) {
-                val startIdx = frameIndex * approxLinesPerFrame
-                val endIdx = Math.min(lines.size, startIdx + approxLinesPerFrame)
-                if (startIdx < lines.size) {
-                    return lines.subList(startIdx, endIdx).joinToString("\n")
-                }
-            }
-            return ""
-        }
-
         // 3) Timestamp scaling detection
         var finalSegments = segments.toList()
         val maxStart = finalSegments.map { it.start }.maxOrNull() ?: 0f
         val videoDuration = frameTimeSecs.maxOrNull() ?: 0f
-        if (videoDuration > 3.0f && maxStart > 0f && maxStart < 1.0f) {
-            // Timestamps are scaled down (e.g. divided by 1000 twice by bugged integrations). Let's scale up.
-            finalSegments = finalSegments.map { seg ->
-                TranscriptSegment(seg.start * 1000f, seg.end * 1000f, seg.text)
+        
+        // Robust scaling check to avoid false positives on short dialogues or early active frames
+        if (videoDuration > 3.0f && maxStart > 0f) {
+            val avgDuration = finalSegments.map { it.end - it.start }.average()
+            if (maxStart < 1.0f || (avgDuration > 0 && avgDuration < 0.15)) {
+                // Ensure scaling by 1000 doesn't overshoot maximum video duration excessively
+                if (maxStart * 1000f <= videoDuration + 10f) {
+                    finalSegments = finalSegments.map { seg ->
+                        TranscriptSegment(seg.start * 1000f, seg.end * 1000f, seg.text)
+                    }
+                }
             }
         }
 
-        // 4) Map each segment to the closest frame of the video
-        val matchedLines = mutableListOf<String>()
-        for (seg in finalSegments) {
-            val closestFrame = allFrames.minByOrNull { Math.abs((it.timestampMs / 1000f) - seg.start) }
-            if (closestFrame != null && closestFrame.frameNum == targetFrame.frameNum) {
-                val totalSec = seg.start.toInt()
+        return finalSegments
+    }
+
+    private fun precomputeFrameTranscriptMap(
+        fullText: String,
+        allFrames: List<FrameInfo>
+    ): Map<Int, List<String>> {
+        val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        val resultMap = mutableMapOf<Int, MutableList<String>>()
+        for (i in allFrames.indices) {
+            resultMap[i] = mutableListOf()
+        }
+        if (lines.isEmpty() || allFrames.isEmpty()) return resultMap.mapValues { it.value.toList() }
+
+        val segments = getOrParseSegments(fullText, allFrames)
+
+        if (segments.isEmpty()) {
+            // No recognizable timestamps. Distribute lines proportionally
+            val approxLinesPerFrame = Math.ceil(lines.size.toDouble() / allFrames.size).toInt()
+            for (frameIndex in allFrames.indices) {
+                val startIdx = frameIndex * approxLinesPerFrame
+                val endIdx = Math.min(lines.size, startIdx + approxLinesPerFrame)
+                if (startIdx < lines.size) {
+                    resultMap[frameIndex]?.addAll(lines.subList(startIdx, endIdx))
+                }
+            }
+            return resultMap.mapValues { it.value.toList() }
+        }
+
+        // Dynamically compute exclusive contiguous temporal windows for each frame to map logically
+        val frameTimes = allFrames.map { it.timestampMs / 1000f }
+        val n = frameTimes.size
+        val frameWindows = ArrayList<Pair<Float, Float>>()
+        for (idx in 0 until n) {
+            val startBound = if (idx == 0) {
+                0f
+            } else {
+                (frameTimes[idx - 1] + frameTimes[idx]) / 2f
+            }
+            val endBound = if (idx == n - 1) {
+                Float.MAX_VALUE // Carry up to infinite duration of last segment
+            } else {
+                (frameTimes[idx] + frameTimes[idx + 1]) / 2f
+            }
+            frameWindows.add(Pair(startBound, endBound))
+        }
+
+        // Assign each segment using overlap/midpoint matching
+        for (seg in segments) {
+            val segStart = seg.start
+            val segEnd = seg.end
+            val segMid = (segStart + segEnd) / 2f
+
+            // Find the best frame index based on maximum time overlap with its exclusive window
+            var bestIdx = -1
+            var maxOverlap = -1f
+
+            for (idx in 0 until n) {
+                val (wStart, wEnd) = frameWindows[idx]
+                val overlapStart = Math.max(segStart, wStart)
+                val overlapEnd = Math.min(segEnd, wEnd)
+                val overlap = overlapEnd - overlapStart
+                if (overlap > maxOverlap && overlap > 0f) {
+                    maxOverlap = overlap
+                    bestIdx = idx
+                }
+            }
+
+            // If no positive overlap, fall back to matching the midpoint in a window
+            if (bestIdx == -1) {
+                for (idx in 0 until n) {
+                    val (wStart, wEnd) = frameWindows[idx]
+                    if (segMid >= wStart && segMid < wEnd) {
+                        bestIdx = idx
+                        break
+                    }
+                }
+            }
+
+            // If still not matched, find closest frame by timestamp absolute difference
+            if (bestIdx == -1) {
+                bestIdx = frameTimes.indices.minByOrNull { idx ->
+                    Math.abs(frameTimes[idx] - segMid)
+                } ?: 0
+            }
+
+            if (bestIdx != -1) {
+                val totalSec = segStart.toInt()
                 val min = totalSec / 60
                 val sec = totalSec % 60
                 val timeStr = String.format(java.util.Locale.US, "[%02d:%02d]", min, sec)
-                matchedLines.add("$timeStr ${seg.text}")
+                resultMap[bestIdx]?.add("$timeStr ${seg.text}")
             }
         }
 
-        return matchedLines.joinToString("\n")
+        return resultMap.mapValues { it.value.toList() }
     }
 
     private fun createZip(srcFolder: File, destZipFile: File) {
@@ -1561,3 +1659,10 @@ class VideoProcessor(
         return sb.toString()
     }
 }
+
+private data class TranscriptSegment(
+    val start: Float,
+    val end: Float,
+    val text: String
+)
+
