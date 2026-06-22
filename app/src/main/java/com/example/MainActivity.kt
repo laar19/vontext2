@@ -82,7 +82,7 @@ fun txt(key: String): String {
 fun getTxt(key: String, lang: String): String {
     return when (lang) {
         "en" -> when (key) {
-            "v2.1.1" -> "v2.1.1"
+            "v2.1.3" -> "v2.1.3"
             "Inicio" -> "Home"
             "Historial" -> "History"
             "Ajustes" -> "Settings"
@@ -161,7 +161,7 @@ fun getTxt(key: String, lang: String): String {
             "Local (Esp)" -> "Local (Sp)"
             "Gemini API" -> "Gemini API"
             "API Remote" -> "Remote API"
-            "v2.1.1" -> "v2.1.1"
+            "v2.1.3" -> "v2.1.3"
             "Seleccionar Videos" -> "Select Videos"
             "Toca aquí para seleccionar uno o varios videos del almacenamiento local" -> "Tap here to select one or multiple videos from local storage"
             "Agrupamiento de Reportes" -> "Report Grouping"
@@ -367,7 +367,7 @@ fun HeaderBlock() {
                     )
                 )
                 Text(
-                    text = txt("v2.1.1"),
+                    text = txt("v2.1.3"),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 1.sp,
