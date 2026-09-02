@@ -95,8 +95,60 @@ vontext/
 │   │   └── AndroidManifest.xml
 │   └── src/test/                        # Pruebas unitarias y Robolectric
 ├── ARCHITECTURE.md                      # Documentación de arquitectura detallada
+├── PRIVACY_POLICY.md                    # Política de privacidad requerida para Google Play
+├── DATA_SAFETY.md                       # Respuestas para el formulario de Seguridad de Datos
 └── README.md
 ```
+
+---
+
+## 🛡️ Publicación en Google Play Store y Privacidad
+
+Antes de compilar y distribuir en producción, ten en cuenta los siguientes recursos incluidos en este repositorio:
+
+1. **[PRIVACY_POLICY.md](./PRIVACY_POLICY.md)**:
+   - Política de privacidad oficial lista para enlazar públicamente (requisito obligatorio de Google Play Store).
+   - Detalla el procesamiento local con Vosk vs. remoto con Whisper/Gemini y garantiza que no hay recopilación comercial de datos.
+
+2. **[DATA_SAFETY.md](./DATA_SAFETY.md)**:
+   - Guía con las respuestas exactas para completar la sección de **Seguridad de los Datos (Data Safety)** en Google Play Console.
+   - Incluye el texto de justificación para el permiso de servicio en primer plano (`FOREGROUND_SERVICE_SPECIAL_USE`).
+
+3. **Nota sobre `AndroidManifest.xml` antes de compilar el `.AAB` de Producción**:
+   - En `app/src/main/AndroidManifest.xml`, la etiqueta `android:requestLegacyExternalStorage="true"` está presente por compatibilidad histórica con Android 10.
+   - Dado que la app ya usa selectores modernos de medios y Scoped Storage (`LogcatHelper.getVontextBaseDir`), **se recomienda remover dicha línea antes de generar el paquete final de producción (`.aab`)** para evitar advertencias o revisiones adicionales de almacenamiento en Play Console.
+
+---
+
+## 📋 Lista de Verificación para el Lanzamiento (Pre-Launch Checklist)
+
+Asegúrate de completar estos pasos antes de enviar a revisión en Google Play Console:
+
+### 1. Activos Gráficos Obligatorios de la Tienda
+- [ ] **Ícono de la App**: 512 x 512 px en formato PNG de 32 bits (con canal alfa).
+- [ ] **Gráfico de Funciones (Feature Graphic)**: 1024 x 500 px (PNG o JPEG). Es el banner principal de la ficha.
+- [ ] **Capturas de Pantalla**: Mínimo 4 capturas de teléfono (relación 16:9 o 9:16, entre 1080p y 4K). Recomendable incluir:
+  1. Pantalla principal con lista de grabaciones y botón de procesamiento.
+  2. Vista de progreso con extracción de cuadros y transcripción de voz.
+  3. Vista previa del reporte PDF generado (con cuadros y transcripción correlacionada).
+  4. La burbuja flotante sobre otra app capturando logs del sistema.
+
+### 2. Video de Demostración para Foreground Service
+- [ ] Grabar un video breve (15–30 segundos) mostrando la activación de la burbuja flotante desde la app, cómo permanece visible al salir a la pantalla de inicio, y su cierre. Este video se solicita en el formulario de permisos de Google Play.
+
+### 3. Configuración de Compilación y Firma
+- [ ] **Generar Android App Bundle (`.aab`)**:
+  ```bash
+  gradle :app:bundleRelease
+  ```
+  *(El `.aab` resultante estará en `app/build/outputs/bundle/release/app-release.aab`)*.
+- [ ] **Keystore de Producción**: Firmar con tu clave de subida (*Upload Key*) privada y guardarla en un lugar seguro. Nunca subir el keystore al repositorio público.
+- [ ] **Version Code e Incremental**: Incrementar `versionCode` y `versionName` en `app/build.gradle.kts` para cada nueva versión enviada a la consola.
+
+### 4. Categoría y Clasificación de Contenido
+- [ ] **Categoría recomendada**: *Herramientas* o *Productividad*.
+- [ ] **Cuestionario de Clasificación de Contenido (IARC)**: Seleccionar "Utilidad / Herramienta" (no contiene violencia, lenguaje ofensivo ni apuestas).
+- [ ] **Público Objetivo**: Seleccionar mayores de 18 años o mayores de 13 años (para evitar las restricciones adicionales del programa familiar / Designed for Families).
 
 ---
 
