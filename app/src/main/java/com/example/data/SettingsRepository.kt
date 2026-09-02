@@ -37,6 +37,12 @@ class SettingsRepository(context: Context) {
     fun getIncludeTimestamps(): Boolean = prefs.getBoolean("include_timestamps", true)
     fun setIncludeTimestamps(value: Boolean) = prefs.edit().putBoolean("include_timestamps", value).apply()
 
+    fun getEnableOcr(): Boolean = prefs.getBoolean("enable_ocr", true)
+    fun setEnableOcr(value: Boolean) = prefs.edit().putBoolean("enable_ocr", value).apply()
+
+    fun getAutoAttachLogcat(): Boolean = prefs.getBoolean("auto_attach_logcat", true)
+    fun setAutoAttachLogcat(value: Boolean) = prefs.edit().putBoolean("auto_attach_logcat", value).apply()
+
     fun getCustomModels(): List<CustomModel> {
         val serialized = prefs.getString("custom_models_serialized", "") ?: ""
         if (serialized.isEmpty()) return emptyList()

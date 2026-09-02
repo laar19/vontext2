@@ -3,13 +3,17 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import com.example.service.FloatingOverlayService
+import com.example.util.DeveloperOptionsHelper
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -1845,6 +1849,201 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                                 ),
                                 modifier = Modifier.testTag("include_timestamps_settings_switch")
                             )
+                        }
+
+                        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder))
+
+                        // OCR Analysis Switch
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.updateEnableOcr(!viewModel.enableOcr) },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1.5f)) {
+                                Text(
+                                    text = txt("Análisis OCR de Elementos de Pantalla"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = CharcoalText
+                                )
+                                Text(
+                                    text = txt("Detecta diálogos, barras de error y regiones de la app bajo prueba para enriquecer el PDF."),
+                                    fontSize = 11.sp,
+                                    color = MutedGray,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                            Switch(
+                                checked = viewModel.enableOcr,
+                                onCheckedChange = { viewModel.updateEnableOcr(it) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = BrandGreen,
+                                    uncheckedThumbColor = GrayDetail,
+                                    uncheckedTrackColor = SoftGrayBorder
+                                ),
+                                modifier = Modifier.testTag("enable_ocr_settings_switch")
+                            )
+                        }
+
+                        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder))
+
+                        // Auto-attach Logcat Switch
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.updateAutoAttachLogcat(!viewModel.autoAttachLogcat) },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1.5f)) {
+                                Text(
+                                    text = txt("Adjuntar Logcat del Sistema automáticamente"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = CharcoalText
+                                )
+                                Text(
+                                    text = txt("Guarda los últimos logs del sistema y excepciones (logcat.txt) dentro del ZIP de reporte."),
+                                    fontSize = 11.sp,
+                                    color = MutedGray,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                            Switch(
+                                checked = viewModel.autoAttachLogcat,
+                                onCheckedChange = { viewModel.updateAutoAttachLogcat(it) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = BrandGreen,
+                                    uncheckedThumbColor = GrayDetail,
+                                    uncheckedTrackColor = SoftGrayBorder
+                                ),
+                                modifier = Modifier.testTag("auto_attach_logcat_settings_switch")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Developer Debugging & Overlay Card
+        item {
+            val context = LocalContext.current
+            var isOverlayRunning by remember { mutableStateOf(FloatingOverlayService.isRunning) }
+            val showTapsEnabled = remember { mutableStateOf(DeveloperOptionsHelper.isShowTouchesEnabled(context)) }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = txt("Herramientas de Depuración y Grabación"),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = GrayDetail
+                )
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = WarmWhite),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SoftGrayBorder)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // 1. Floating Overlay Bubble
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1.4f)) {
+                                Text(
+                                    text = txt("Burbuja Flotante de Depuración"),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = CharcoalText
+                                )
+                                Text(
+                                    text = txt("Muestra un botón flotante sobre otras apps para volcar Logcat o volver a Vontext al instante."),
+                                    fontSize = 11.sp,
+                                    color = MutedGray,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                            Switch(
+                                checked = isOverlayRunning,
+                                onCheckedChange = { start ->
+                                    if (start) {
+                                        if (Settings.canDrawOverlays(context)) {
+                                            FloatingOverlayService.startService(context)
+                                            isOverlayRunning = true
+                                        } else {
+                                            val overlayIntent = Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                            context.startActivity(overlayIntent)
+                                            Toast.makeText(context, "Concede permiso de superposición y vuelve a activarlo", Toast.LENGTH_LONG).show()
+                                        }
+                                    } else {
+                                        FloatingOverlayService.stopService(context)
+                                        isOverlayRunning = false
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = BrandGreen,
+                                    uncheckedThumbColor = GrayDetail,
+                                    uncheckedTrackColor = SoftGrayBorder
+                                ),
+                                modifier = Modifier.testTag("floating_overlay_switch")
+                            )
+                        }
+
+                        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder))
+
+                        // 2. Touch / Gesture Indicators
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1.4f)) {
+                                    Text(
+                                        text = txt("Indicador de Toques y Gestos en Pantalla"),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = CharcoalText
+                                    )
+                                    Text(
+                                        text = txt("Activa círculos visuales donde tocas la pantalla para que la IA vea exactamente dónde interactuaste."),
+                                        fontSize = 11.sp,
+                                        color = MutedGray,
+                                        lineHeight = 14.sp
+                                    )
+                                }
+                                Text(
+                                    text = if (showTapsEnabled.value) "ACTIVO" else "INACTIVO",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = if (showTapsEnabled.value) BrandGreen else MutedGray,
+                                    modifier = Modifier.padding(start = 8.dp)
+                                )
+                            }
+                            
+                            OutlinedButton(
+                                onClick = {
+                                    DeveloperOptionsHelper.openDeveloperOptions(context)
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("open_dev_options_btn"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(txt("Abrir Opciones de Desarrollador (Mostrar Toques)"), fontSize = 12.sp)
+                            }
                         }
                     }
                 }

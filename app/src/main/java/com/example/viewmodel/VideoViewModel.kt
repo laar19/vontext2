@@ -73,6 +73,11 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     var appLanguage by mutableStateOf(settingsRepository.getLanguage())
         private set
 
+    var enableOcr by mutableStateOf(settingsRepository.getEnableOcr())
+        private set
+    var autoAttachLogcat by mutableStateOf(settingsRepository.getAutoAttachLogcat())
+        private set
+
     // Local Whisper model state
     var isWhisperLocalDownloaded by mutableStateOf(settingsRepository.isWhisperLocalDownloaded())
         private set
@@ -327,6 +332,16 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     fun updateLanguage(lang: String) {
         settingsRepository.setLanguage(lang)
         appLanguage = lang
+    }
+
+    fun updateEnableOcr(enabled: Boolean) {
+        settingsRepository.setEnableOcr(enabled)
+        enableOcr = enabled
+    }
+
+    fun updateAutoAttachLogcat(enabled: Boolean) {
+        settingsRepository.setAutoAttachLogcat(enabled)
+        autoAttachLogcat = enabled
     }
 
     // Processing status state

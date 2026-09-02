@@ -12,9 +12,13 @@ import android.graphics.pdf.PdfDocument
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import com.example.data.Job
 import com.example.data.JobRepository
 import com.example.data.SettingsRepository
+import com.example.util.LogcatHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -157,11 +161,18 @@ class VideoProcessor(
                             resized.compress(Bitmap.CompressFormat.JPEG, 85, fos)
                         }
                         
+                        val ocrSummary = if (settingsRepository.getEnableOcr()) {
+                            FrameOcrHelper.extractScreenTextSummary(frameFile.absolutePath)
+                        } else {
+                            ""
+                        }
+
                         extractedFrames.add(
                             FrameInfo(
                                 frameNum = index + 1,
                                 timestampMs = timeMs,
-                                path = frameFile.absolutePath
+                                path = frameFile.absolutePath,
+                                ocrText = ocrSummary
                             )
                         )
 
@@ -185,7 +196,17 @@ class VideoProcessor(
                     onProgressUpdate = onProgressUpdate
                 )
 
-                // 5. Generate PDF Report
+                // 5. Auto-Attach Logcat Dump for Developer Debugging
+                if (settingsRepository.getAutoAttachLogcat()) {
+                    try {
+                        val logcatFile = File(outputDir, "logcat.txt")
+                        LogcatHelper.saveLogcatToFile(logcatFile, 350)
+                    } catch (e: Exception) {
+                        // Ignore logcat dump issues on sandboxes
+                    }
+                }
+
+                // 6. Generate PDF Report
                 onProgressUpdate(75, "Generando reporte PDF con transcripciones...")
                 val pdfFile = File(outputDir, "Reporte_Vontext_${jobId.take(6)}.pdf")
                 generatePdf(pdfFile, notes, durationSec, extractedFrames, transcriptionText, whisperMode)
@@ -198,12 +219,12 @@ class VideoProcessor(
                     // Ignore or fallback
                 }
 
-                // 6. Create ZIP Archive
+                // 7. Create ZIP Archive
                 onProgressUpdate(90, "Empaquetando todo en ZIP...")
                 val zipFile = File(outputDir.parent, "Vontext_${jobId.take(6)}.zip")
                 createZip(outputDir, zipFile)
 
-                // 7. Update final Job Entity in database
+                // 8. Update final Job Entity in database
                 onProgressUpdate(100, "¡Trabajo completado con éxito!")
                 val completedJob = Job(
                     jobId = jobId,
@@ -415,10 +436,17 @@ class VideoProcessor(
                                 resized.compress(Bitmap.CompressFormat.JPEG, 85, fos)
                             }
                             
+                            val ocrSummary = if (settingsRepository.getEnableOcr()) {
+                                FrameOcrHelper.extractScreenTextSummary(frameFile.absolutePath)
+                            } else {
+                                ""
+                            }
+
                             val fInfo = FrameInfo(
                                 frameNum = globalFrameNum++,
                                 timestampMs = timeMs,
-                                path = frameFile.absolutePath
+                                path = frameFile.absolutePath,
+                                ocrText = ocrSummary
                             )
                             consolidatedExtractedFrames.add(fInfo)
                             currentVideoExtractedFrames.add(fInfo)
@@ -444,6 +472,16 @@ class VideoProcessor(
 
                     val filename = videoUri.lastPathSegment ?: "video.mp4"
                     sbTranscription.append("\n\n=== Archivo: $filename ===\n$videoTranscription\n")
+                }
+
+                // Auto-Attach Logcat Dump for Developer Debugging
+                if (settingsRepository.getAutoAttachLogcat()) {
+                    try {
+                        val logcatFile = File(outputDir, "logcat.txt")
+                        LogcatHelper.saveLogcatToFile(logcatFile, 350)
+                    } catch (e: Exception) {
+                        // Ignore logcat dump issues on sandboxes
+                    }
                 }
 
                 // Consolidated PDF & ZIP
@@ -1129,6 +1167,18 @@ class VideoProcessor(
             isAntiAlias = true
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
         }
+        val textPaintForLayout = TextPaint().apply {
+            color = Color.BLACK
+            textSize = 10f
+            isAntiAlias = true
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        }
+        val ocrPaintForLayout = TextPaint().apply {
+            color = Color.rgb(44, 62, 80)
+            textSize = 9f
+            isAntiAlias = true
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+        }
         val boldTextPaint = Paint().apply {
             color = Color.BLACK
             textSize = 10f
@@ -1183,26 +1233,64 @@ class VideoProcessor(
                 bitmap.recycle()
 
                 // Draw transcription context block below image
-                val textY = (startY + h + 40).toFloat()
+                val textY = (startY + h + 24).toFloat()
+
+                // If OCR detected UI elements/dialogs/actions, render subtitle pill/badge
+                var currentY = textY
+                if (frame.ocrText.isNotBlank()) {
+                    val ocrTag = "🔍 Análisis UI/Pantalla: ${frame.ocrText}"
+                    canvas.save()
+                    canvas.translate(50f, currentY)
+                    val ocrLayout = StaticLayout.Builder.obtain(
+                        ocrTag,
+                        0,
+                        ocrTag.length,
+                        ocrPaintForLayout,
+                        pageWidth - 100
+                    ).setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                     .setLineSpacing(0f, 1.15f)
+                     .setIncludePad(false)
+                     .build()
+
+                    ocrLayout.draw(canvas)
+                    canvas.restore()
+                    currentY += ocrLayout.height + 14f
+                }
 
                 // Match specific transcript based on precomputed mapping
                 val relevantSnippetLines = frameTextMap[frameIndex] ?: emptyList()
-                
-                var snippetY = textY
+                val snippetTextBuilder = StringBuilder()
                 relevantSnippetLines.forEach { line ->
-                    if (snippetY < pageHeight - 50) {
-                        val cleanLine = if (!includeTimestamps) {
-                            line.replace(Regex("^\\[\\d{2}:\\d{2}\\]\\s*"), "")
-                                .replace(Regex("^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*"), "")
-                        } else {
-                            line
-                        }
-                        // Skip printing if it's empty after stripping
-                        if (cleanLine.trim().isNotEmpty()) {
-                            canvas.drawText(cleanLine, 50f, snippetY, textPaint)
-                            snippetY += 15f
-                        }
+                    val cleanLine = if (!includeTimestamps) {
+                        line.replace(Regex("^\\[\\d{2}:\\d{2}\\]\\s*"), "")
+                            .replace(Regex("^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*"), "")
+                    } else {
+                        line
                     }
+                    if (cleanLine.trim().isNotEmpty()) {
+                        if (snippetTextBuilder.isNotEmpty()) snippetTextBuilder.append("\n")
+                        snippetTextBuilder.append(cleanLine.trim())
+                    }
+                }
+
+                val fullSnippet = snippetTextBuilder.toString()
+                if (fullSnippet.isNotBlank() && currentY < pageHeight - 40) {
+                    canvas.save()
+                    canvas.translate(50f, currentY)
+                    val availableWidth = pageWidth - 100
+                    val transcriptLayout = StaticLayout.Builder.obtain(
+                        fullSnippet,
+                        0,
+                        fullSnippet.length,
+                        textPaintForLayout,
+                        availableWidth
+                    ).setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                     .setLineSpacing(0f, 1.25f)
+                     .setIncludePad(false)
+                     .build()
+
+                    transcriptLayout.draw(canvas)
+                    canvas.restore()
                 }
             }
 
