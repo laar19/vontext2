@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.net.Uri
 import android.os.Build
@@ -91,7 +92,12 @@ class FloatingOverlayService : Service() {
         super.onCreate()
         isRunning = true
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         showFloatingBubble()
     }
 
@@ -224,13 +230,11 @@ class FloatingOverlayService : Service() {
                 cornerRadius = 14f
             }
             setOnClickListener {
-                val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                val vontextDir = File(downloadsDir, "Vontext")
-                if (!vontextDir.exists()) vontextDir.mkdirs()
+                val vontextDir = LogcatHelper.getVontextBaseDir(this@FloatingOverlayService)
                 val logFile = File(vontextDir, "logcat_dump_${System.currentTimeMillis()}.txt")
                 val success = LogcatHelper.saveLogcatToFile(logFile, 300)
                 if (success) {
-                    Toast.makeText(this@FloatingOverlayService, "✅ Logcat guardado en Descargas/Vontext/", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@FloatingOverlayService, "✅ Logcat guardado en: ${logFile.name}", Toast.LENGTH_LONG).show()
                 } else {
                     Toast.makeText(this@FloatingOverlayService, "⚠️ No se pudo guardar el logcat", Toast.LENGTH_SHORT).show()
                 }
@@ -315,10 +319,24 @@ class FloatingOverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Exception) {
+            // Ignore foreground teardown exceptions
+        }
         if (overlayView != null) {
             try {
-                windowManager?.removeView(overlayView)
-            } catch (e: Exception) {}
+                if (overlayView?.isAttachedToWindow == true) {
+                    windowManager?.removeView(overlayView)
+                }
+            } catch (e: Exception) {
+                // Ignore view detach issues
+            }
             overlayView = null
         }
     }

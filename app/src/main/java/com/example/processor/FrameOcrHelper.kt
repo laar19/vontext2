@@ -14,10 +14,23 @@ object FrameOcrHelper {
     fun extractScreenTextSummary(imagePath: String): String {
         return try {
             val file = File(imagePath)
-            if (!file.exists()) return ""
+            if (!file.exists() || file.length() == 0L) return ""
+
+            // 1. Measure dimensions without allocating memory
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(imagePath, boundsOptions)
+            val origW = boundsOptions.outWidth
+            val origH = boundsOptions.outHeight
+            if (origW <= 0 || origH <= 0) return ""
+
+            // Calculate sample size to limit analysis size to ~360px
+            val maxDim = Math.max(origW, origH)
+            val sample = if (maxDim > 360) maxDim / 360 else 1
 
             val options = BitmapFactory.Options().apply {
-                inSampleSize = 2 // downsample for fast processing
+                inSampleSize = sample.coerceAtLeast(1)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inMutable = false
             }
             val bitmap = BitmapFactory.decodeFile(imagePath, options) ?: return ""
 

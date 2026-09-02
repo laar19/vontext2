@@ -59,14 +59,7 @@ class VideoProcessor(
             try {
                 // 1. Initial State
                 onProgressUpdate(5, "Inicializando procesamiento...")
-                val parentDir = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "Vontext"
-                )
-                if (!parentDir.exists()) {
-                    parentDir.mkdirs()
-                }
-                
+                val parentDir = LogcatHelper.getVontextBaseDir(context)
                 val outputDir = File(parentDir, "job_$jobId")
                 if (!outputDir.exists()) {
                     outputDir.mkdirs()
@@ -313,14 +306,7 @@ class VideoProcessor(
         withContext(Dispatchers.IO) {
             try {
                 onProgressUpdate(5, "Inicializando procesamiento de ${videoUris.size} archivos...")
-                val parentDir = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "Vontext"
-                )
-                if (!parentDir.exists()) {
-                    parentDir.mkdirs()
-                }
-                
+                val parentDir = LogcatHelper.getVontextBaseDir(context)
                 val outputDir = File(parentDir, "job_$jobId")
                 if (!outputDir.exists()) {
                     outputDir.mkdirs()
@@ -1274,10 +1260,12 @@ class VideoProcessor(
                 }
 
                 val fullSnippet = snippetTextBuilder.toString()
-                if (fullSnippet.isNotBlank() && currentY < pageHeight - 40) {
+                val maxAvailableHeight = (pageHeight - currentY - 35).toFloat()
+                if (fullSnippet.isNotBlank() && maxAvailableHeight > 20f) {
                     canvas.save()
                     canvas.translate(50f, currentY)
                     val availableWidth = pageWidth - 100
+                    canvas.clipRect(0f, 0f, availableWidth.toFloat(), maxAvailableHeight)
                     val transcriptLayout = StaticLayout.Builder.obtain(
                         fullSnippet,
                         0,

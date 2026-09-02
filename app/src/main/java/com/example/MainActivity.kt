@@ -1935,6 +1935,20 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
             var isOverlayRunning by remember { mutableStateOf(FloatingOverlayService.isRunning) }
             val showTapsEnabled = remember { mutableStateOf(DeveloperOptionsHelper.isShowTouchesEnabled(context)) }
 
+            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner) {
+                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                        isOverlayRunning = FloatingOverlayService.isRunning
+                        showTapsEnabled.value = DeveloperOptionsHelper.isShowTouchesEnabled(context)
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose {
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                }
+            }
+
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = txt("Herramientas de Depuración y Grabación"),
