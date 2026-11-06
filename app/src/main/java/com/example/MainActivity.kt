@@ -14,6 +14,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import com.example.service.FloatingOverlayService
 import com.example.util.DeveloperOptionsHelper
+import com.example.util.LogcatHelper
+import android.content.ClipboardManager
+import android.content.ClipData
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -86,7 +89,7 @@ fun txt(key: String): String {
 fun getTxt(key: String, lang: String): String {
     return when (lang) {
         "en" -> when (key) {
-            "v2.1.3" -> "v2.1.3"
+            "v2.3.0" -> "v2.3.0"
             "Inicio" -> "Home"
             "Historial" -> "History"
             "Ajustes" -> "Settings"
@@ -165,7 +168,6 @@ fun getTxt(key: String, lang: String): String {
             "Local (Esp)" -> "Local (Sp)"
             "Gemini API" -> "Gemini API"
             "API Remote" -> "Remote API"
-            "v2.1.3" -> "v2.1.3"
             "Seleccionar Videos" -> "Select Videos"
             "Toca aquí para seleccionar uno o varios videos del almacenamiento local" -> "Tap here to select one or multiple videos from local storage"
             "Agrupamiento de Reportes" -> "Report Grouping"
@@ -371,7 +373,7 @@ fun HeaderBlock() {
                     )
                 )
                 Text(
-                    text = txt("v2.1.3"),
+                    text = txt("v2.3.0"),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 1.sp,
@@ -1923,6 +1925,129 @@ fun SettingsTabContent(viewModel: VideoViewModel) {
                                 ),
                                 modifier = Modifier.testTag("auto_attach_logcat_settings_switch")
                             )
+                        }
+
+                        if (viewModel.autoAttachLogcat) {
+                            val context = LocalContext.current
+                            var hasLogPermission by remember { mutableStateOf(LogcatHelper.hasReadLogsPermission(context)) }
+                            var debugPkgInput by remember(viewModel.debugPackage) { mutableStateOf(viewModel.debugPackage) }
+
+                            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                            DisposableEffect(lifecycleOwner) {
+                                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                                        hasLogPermission = LogcatHelper.hasReadLogsPermission(context)
+                                    }
+                                }
+                                lifecycleOwner.lifecycle.addObserver(observer)
+                                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                            }
+
+                            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder))
+
+                            // READ_LOGS Permission Status
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = txt("Permiso de logs del sistema (READ_LOGS):"),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = CharcoalText
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (hasLogPermission) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+                                    ) {
+                                        Text(
+                                            text = if (hasLogPermission) "Concedido" else "No concedido",
+                                            color = if (hasLogPermission) Color(0xFF2E7D32) else Color(0xFFC62828),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
+
+                                if (!hasLogPermission) {
+                                    val adbCmd = "adb shell pm grant ${context.packageName} android.permission.READ_LOGS"
+                                    Text(
+                                        text = "Para capturar logs de otras apps bajo prueba, ejecuta este comando en tu terminal con el teléfono conectado por USB:",
+                                        fontSize = 11.sp,
+                                        color = MutedGray,
+                                        lineHeight = 14.sp
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFF263238),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = adbCmd,
+                                                color = Color(0xFF80CBC4),
+                                                fontSize = 10.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    val clip = ClipData.newPlainText("ADB Command", adbCmd)
+                                                    clipboard.setPrimaryClip(clip)
+                                                    Toast.makeText(context, "Comando copiado al portapapeles", Toast.LENGTH_SHORT).show()
+                                                },
+                                                modifier = Modifier.size(28.dp).testTag("copy_adb_log_command_btn")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Share,
+                                                    contentDescription = "Copiar comando ADB",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(SoftGrayBorder))
+
+                            // Paquete de la app a depurar
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = txt("Paquete de la app a depurar"),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = CharcoalText
+                                )
+                                Text(
+                                    text = "Filtra automáticamente el volcado de logcat por el PID de la app o excepciones AndroidRuntime/FATAL.",
+                                    fontSize = 11.sp,
+                                    color = MutedGray,
+                                    lineHeight = 14.sp
+                                )
+                                OutlinedTextField(
+                                    value = debugPkgInput,
+                                    onValueChange = {
+                                        debugPkgInput = it
+                                        viewModel.updateDebugPackage(it)
+                                    },
+                                    placeholder = { Text("ej. com.miapp.debug", fontSize = 12.sp, color = MutedGray) },
+                                    modifier = Modifier.fillMaxWidth().testTag("debug_package_textfield"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    singleLine = true
+                                )
+                            }
                         }
                     }
                 }

@@ -77,6 +77,8 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var autoAttachLogcat by mutableStateOf(settingsRepository.getAutoAttachLogcat())
         private set
+    var debugPackage by mutableStateOf(settingsRepository.getDebugPackage())
+        private set
 
     // Local Whisper model state
     var isWhisperLocalDownloaded by mutableStateOf(settingsRepository.isWhisperLocalDownloaded())
@@ -342,6 +344,11 @@ class VideoViewModel(application: Application) : AndroidViewModel(application) {
     fun updateAutoAttachLogcat(enabled: Boolean) {
         settingsRepository.setAutoAttachLogcat(enabled)
         autoAttachLogcat = enabled
+    }
+
+    fun updateDebugPackage(pkg: String) {
+        settingsRepository.setDebugPackage(pkg)
+        debugPackage = pkg
     }
 
     // Processing status state

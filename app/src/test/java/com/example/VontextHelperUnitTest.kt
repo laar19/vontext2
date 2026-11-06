@@ -2,6 +2,7 @@ package com.example
 
 import com.example.processor.FrameOcrHelper
 import com.example.util.LogcatHelper
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,20 +11,20 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [36])
 class VontextHelperUnitTest {
 
     @Test
-    fun testLogcatCaptureFormat() {
-        val output = LogcatHelper.captureRecentLogs(10)
+    fun testLogcatCaptureHeader() {
+        val output = LogcatHelper.captureRecentLogs(maxLines = 10)
         assertNotNull(output)
         assertTrue(output.contains("VONTEXT LOGCAT DUMP"))
     }
 
     @Test
-    fun testOcrEmptyFileHandling() {
+    fun testOcrEmptyFileHandling() = runBlocking {
         val dummyPath = "/tmp/non_existent_file_${System.currentTimeMillis()}.png"
-        val result = FrameOcrHelper.extractScreenTextSummary(dummyPath)
+        val result = FrameOcrHelper.extractScreenText(dummyPath)
         assertTrue(result.isEmpty())
     }
 }

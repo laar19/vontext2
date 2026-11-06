@@ -14,8 +14,8 @@ android {
         applicationId = "com.aistudio.vontext.hzqypl"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.1.3"
+        versionCode = 5
+        versionName = "2.3.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -101,6 +101,7 @@ dependencies {
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   implementation("com.alphacephei:vosk-android:0.3.47")
+  implementation("com.google.mlkit:text-recognition:16.0.1")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

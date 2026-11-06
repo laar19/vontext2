@@ -43,6 +43,9 @@ class SettingsRepository(context: Context) {
     fun getAutoAttachLogcat(): Boolean = prefs.getBoolean("auto_attach_logcat", true)
     fun setAutoAttachLogcat(value: Boolean) = prefs.edit().putBoolean("auto_attach_logcat", value).apply()
 
+    fun getDebugPackage(): String = prefs.getString("debug_package", "") ?: ""
+    fun setDebugPackage(value: String) = prefs.edit().putString("debug_package", value.trim()).apply()
+
     fun getCustomModels(): List<CustomModel> {
         val serialized = prefs.getString("custom_models_serialized", "") ?: ""
         if (serialized.isEmpty()) return emptyList()

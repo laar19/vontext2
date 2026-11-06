@@ -15,6 +15,7 @@ import android.os.Environment
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.util.Log
 import com.example.data.Job
 import com.example.data.JobRepository
 import com.example.data.SettingsRepository
@@ -85,6 +86,26 @@ class VideoProcessor(
                 val hasAudioStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
                 val hasAudio = hasAudioStr == "yes"
 
+                // Extract recording date from video metadata if available
+                val dateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
+                val videoStartDateMs: Long? = if (!dateStr.isNullOrBlank()) {
+                    try {
+                        val sdf = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS'Z'", java.util.Locale.US).apply {
+                            timeZone = java.util.TimeZone.getTimeZone("UTC")
+                        }
+                        sdf.parse(dateStr)?.time
+                    } catch (e: Exception) {
+                        try {
+                            val sdfFallback = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss", java.util.Locale.US).apply {
+                                timeZone = java.util.TimeZone.getTimeZone("UTC")
+                            }
+                            sdfFallback.parse(dateStr)?.time
+                        } catch (e2: Exception) {
+                            null
+                        }
+                    }
+                } else null
+
                 // Insert pending/analyzing job in database
                 val initialJob = Job(
                     jobId = jobId,
@@ -109,6 +130,7 @@ class VideoProcessor(
                 // 3. Frame Extraction
                 onProgressUpdate(20, "Extrayendo frames del video...")
                 val extractedFrames = mutableListOf<FrameInfo>()
+                var lastOcrText: String? = null
                 val stepTimesMs = mutableListOf<Long>()
 
                 if (frameInterval == 0) {
@@ -154,10 +176,18 @@ class VideoProcessor(
                             resized.compress(Bitmap.CompressFormat.JPEG, 85, fos)
                         }
                         
-                        val ocrSummary = if (settingsRepository.getEnableOcr()) {
-                            FrameOcrHelper.extractScreenTextSummary(frameFile.absolutePath)
+                        val rawOcr = if (settingsRepository.getEnableOcr()) {
+                            FrameOcrHelper.extractScreenText(frameFile.absolutePath)
                         } else {
                             ""
+                        }
+                        val ocrSummary = when {
+                            rawOcr.isBlank() -> ""
+                            lastOcrText != null && rawOcr == lastOcrText -> "(sin cambios en pantalla)"
+                            else -> {
+                                lastOcrText = rawOcr
+                                rawOcr
+                            }
                         }
 
                         extractedFrames.add(
@@ -179,7 +209,7 @@ class VideoProcessor(
 
                 // 4. Transcription Stage
                 onProgressUpdate(55, "Iniciando transcripción y análisis...")
-                val transcriptionText = performTranscription(
+                val transcript = performTranscription(
                     whisperMode = whisperMode,
                     tempVideoFile = tempVideoFile,
                     notes = notes,
@@ -193,21 +223,46 @@ class VideoProcessor(
                 if (settingsRepository.getAutoAttachLogcat()) {
                     try {
                         val logcatFile = File(outputDir, "logcat.txt")
-                        LogcatHelper.saveLogcatToFile(logcatFile, 350)
+                        LogcatHelper.saveLogcatToFile(
+                            outputFile = logcatFile,
+                            context = context,
+                            targetPackage = settingsRepository.getDebugPackage(),
+                            startTimeMs = videoStartDateMs,
+                            maxLines = 350
+                        )
                     } catch (e: Exception) {
                         // Ignore logcat dump issues on sandboxes
                     }
                 }
 
+                // Write transcripcion_sync.json with [{frame, timestampSec, text}]
+                try {
+                    val frameTimes = extractedFrames.map { it.timestampMs / 1000f }
+                    val assignedTexts = assignWordsToFrames(transcript.words, frameTimes)
+                    val syncJsonArray = JSONArray()
+                    extractedFrames.forEachIndexed { idx, frame ->
+                        val obj = JSONObject().apply {
+                            put("frame", frame.frameNum)
+                            put("timestampSec", frame.timestampMs / 1000f)
+                            put("text", assignedTexts.getOrElse(idx) { "" })
+                        }
+                        syncJsonArray.put(obj)
+                    }
+                    val syncJsonFile = File(outputDir, "transcripcion_sync.json")
+                    syncJsonFile.writeText(syncJsonArray.toString(2))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+
                 // 6. Generate PDF Report
                 onProgressUpdate(75, "Generando reporte PDF con transcripciones...")
                 val pdfFile = File(outputDir, "Reporte_Vontext_${jobId.take(6)}.pdf")
-                generatePdf(pdfFile, notes, durationSec, extractedFrames, transcriptionText, whisperMode)
+                generatePdf(pdfFile, notes, durationSec, extractedFrames, transcript, whisperMode)
 
                 // Save plain text transcription as requested by the user
                 try {
                     val txtFile = File(outputDir, "transcripcion.txt")
-                    txtFile.writeText(cleanTranscription(transcriptionText))
+                    txtFile.writeText(transcript.fullText)
                 } catch (e: Exception) {
                     // Ignore or fallback
                 }
@@ -236,7 +291,7 @@ class VideoProcessor(
                     zipPath = zipFile.absolutePath,
                     frameInterval = frameInterval,
                     whisperMode = whisperMode,
-                    transcriptionText = cleanTranscription(transcriptionText)
+                    transcriptionText = transcript.fullText
                 )
                 jobRepository.insertJob(completedJob)
 
@@ -334,11 +389,14 @@ class VideoProcessor(
                 jobRepository.insertJob(initialJob)
 
                 val consolidatedExtractedFrames = mutableListOf<FrameInfo>()
+                val consolidatedWords = mutableListOf<TranscriptWord>()
                 val sbTranscription = StringBuilder()
                 var totalDurationSec = 0f
                 var globalFrameNum = 1
                 var hasAnyAudio = false
                 var firstVideoPath = ""
+                var firstVideoStartDateMs: Long? = null
+                var lastBatchOcrText: String? = null
 
                 videoUris.forEachIndexed { index, videoUri ->
                     coroutineContext.ensureActive()
@@ -369,6 +427,27 @@ class VideoProcessor(
                     } catch (e: Exception) {
                         sbTranscription.append("\n\n=== Archivo: ${videoUri.lastPathSegment ?: "video.mp4"} ===\n[Error al leer metadatos: ${e.message}]\n")
                         return@forEachIndexed
+                    }
+
+                    if (index == 0) {
+                        val dateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
+                        firstVideoStartDateMs = if (dateStr != null) {
+                            try {
+                                val sdf = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS'Z'", java.util.Locale.US).apply {
+                                    timeZone = java.util.TimeZone.getTimeZone("UTC")
+                                }
+                                sdf.parse(dateStr)?.time
+                            } catch (e: Exception) {
+                                try {
+                                    val sdfFallback = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss", java.util.Locale.US).apply {
+                                        timeZone = java.util.TimeZone.getTimeZone("UTC")
+                                    }
+                                    sdfFallback.parse(dateStr)?.time
+                                } catch (e2: Exception) {
+                                    null
+                                }
+                            }
+                        } else null
                     }
                     
                     val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 1000L
@@ -422,10 +501,18 @@ class VideoProcessor(
                                 resized.compress(Bitmap.CompressFormat.JPEG, 85, fos)
                             }
                             
-                            val ocrSummary = if (settingsRepository.getEnableOcr()) {
-                                FrameOcrHelper.extractScreenTextSummary(frameFile.absolutePath)
+                            val rawOcr = if (settingsRepository.getEnableOcr()) {
+                                FrameOcrHelper.extractScreenText(frameFile.absolutePath)
                             } else {
                                 ""
+                            }
+                            val ocrSummary = when {
+                                rawOcr.isBlank() -> ""
+                                lastBatchOcrText != null && rawOcr == lastBatchOcrText -> "(sin cambios en pantalla)"
+                                else -> {
+                                    lastBatchOcrText = rawOcr
+                                    rawOcr
+                                }
                             }
 
                             val fInfo = FrameInfo(
@@ -446,7 +533,7 @@ class VideoProcessor(
                     retriever.release()
 
                     // Transcription of this video
-                    val videoTranscription = performTranscription(
+                    val videoTranscript = performTranscription(
                         whisperMode = whisperMode,
                         tempVideoFile = tempVideoFile,
                         notes = notes,
@@ -457,28 +544,61 @@ class VideoProcessor(
                     )
 
                     val filename = videoUri.lastPathSegment ?: "video.mp4"
-                    sbTranscription.append("\n\n=== Archivo: $filename ===\n$videoTranscription\n")
+                    sbTranscription.append("\n\n=== Archivo: $filename ===\n${videoTranscript.fullText}\n")
+                    
+                    // Offset words by video offset time for consolidated assignment
+                    val currentVideoOffsetSec = totalDurationSec - durationSec
+                    for (w in videoTranscript.words) {
+                        consolidatedWords.add(TranscriptWord(w.start + currentVideoOffsetSec, w.end + currentVideoOffsetSec, w.text))
+                    }
                 }
+
+                val consolidatedTranscript = Transcript(consolidatedWords, sbTranscription.toString())
 
                 // Auto-Attach Logcat Dump for Developer Debugging
                 if (settingsRepository.getAutoAttachLogcat()) {
                     try {
                         val logcatFile = File(outputDir, "logcat.txt")
-                        LogcatHelper.saveLogcatToFile(logcatFile, 350)
+                        LogcatHelper.saveLogcatToFile(
+                            outputFile = logcatFile,
+                            context = context,
+                            targetPackage = settingsRepository.getDebugPackage(),
+                            startTimeMs = firstVideoStartDateMs,
+                            maxLines = 350
+                        )
                     } catch (e: Exception) {
                         // Ignore logcat dump issues on sandboxes
                     }
                 }
 
+                // Write transcripcion_sync.json with [{frame, timestampSec, text}]
+                try {
+                    val frameTimes = consolidatedExtractedFrames.map { it.timestampMs / 1000f }
+                    val assignedTexts = assignWordsToFrames(consolidatedTranscript.words, frameTimes)
+                    val syncJsonArray = JSONArray()
+                    consolidatedExtractedFrames.forEachIndexed { idx, frame ->
+                        val obj = JSONObject().apply {
+                            put("frame", frame.frameNum)
+                            put("timestampSec", frame.timestampMs / 1000f)
+                            put("text", assignedTexts.getOrElse(idx) { "" })
+                        }
+                        syncJsonArray.put(obj)
+                    }
+                    val syncJsonFile = File(outputDir, "transcripcion_sync.json")
+                    syncJsonFile.writeText(syncJsonArray.toString(2))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+
                 // Consolidated PDF & ZIP
                 onProgressUpdate(90, "Generando reporte consolidado PDF y guardando reportes...")
                 val pdfFile = File(outputDir, "Reporte_Consolidado_Vontext_${jobId.take(6)}.pdf")
-                generatePdf(pdfFile, notes, totalDurationSec, consolidatedExtractedFrames, sbTranscription.toString(), whisperMode)
+                generatePdf(pdfFile, notes, totalDurationSec, consolidatedExtractedFrames, consolidatedTranscript, whisperMode)
 
                 // Save plain text transcription as requested by the user
                 try {
                     val txtFile = File(outputDir, "transcripcion.txt")
-                    txtFile.writeText(cleanTranscription(sbTranscription.toString()))
+                    txtFile.writeText(consolidatedTranscript.fullText)
                 } catch (e: Exception) {
                     // Ignore or fallback
                 }
@@ -505,7 +625,7 @@ class VideoProcessor(
                     zipPath = zipFile.absolutePath,
                     frameInterval = frameInterval,
                     whisperMode = whisperMode,
-                    transcriptionText = cleanTranscription(sbTranscription.toString())
+                    transcriptionText = consolidatedTranscript.fullText
                 )
                 jobRepository.insertJob(completedJob)
 
@@ -568,7 +688,7 @@ class VideoProcessor(
         extractedFrames: List<FrameInfo>,
         hasAudio: Boolean,
         onProgressUpdate: (Int, String) -> Unit
-    ): String {
+    ): Transcript {
         val customModels = settingsRepository.getCustomModels()
         val selectedModel = customModels.find { it.id == whisperMode }
 
@@ -589,14 +709,16 @@ class VideoProcessor(
             
             if (!hasModel) {
                 onProgressUpdate(60, "Modelo local ($activeLang) no descargado aún. Usando estimación...")
-                "**[TRANCRIPCIÓN LOCAL DE SEGURIDAD - REQUIERE DESCARGA]**\n" +
+                val txt = "**[TRANCRIPCIÓN LOCAL DE SEGURIDAD - REQUIERE DESCARGA]**\n" +
                 "El modelo de voz offline para el idioma '$activeLang' no se ha detectado. Por favor ve a Ajustes y selecciona y descarga el modelo local para poder transcribir offline sin conexión.\n\n" +
                 generateFallbackTranscript(notes, durationSec, extractedFrames)
+                Transcript(emptyList(), txt)
             } else if (!hasAudio) {
                 onProgressUpdate(60, "El video no tiene pista de audio audible.")
-                "**[VIDEO SIN AUDIO DETECTADO]**\n" +
+                val txt = "**[VIDEO SIN AUDIO DETECTADO]**\n" +
                 "No se pudo extraer una pista de audio para transcribir.\n\n" +
                 generateFallbackTranscript(notes, durationSec, extractedFrames)
+                Transcript(emptyList(), txt)
             } else {
                 try {
                     onProgressUpdate(65, "Extrayendo y combinando canales de audio...")
@@ -604,9 +726,10 @@ class VideoProcessor(
                     val decodedOk = decodeAndResampleAudio(tempVideoFile, pcmFile)
                     if (!decodedOk || !pcmFile.exists() || pcmFile.length() == 0L) {
                         onProgressUpdate(65, "No se pudo decodificar el audio a PCM.")
-                        "**[ERROR EN DECODIFICACIÓN LOCAL]**\n" +
+                        val txt = "**[ERROR EN DECODIFICACIÓN LOCAL]**\n" +
                         "No se pudo decodificar la pista de audio del archivo. Confirma si el formato es compatible o usa la opción de Whisper Remoto.\n\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        Transcript(emptyList(), txt)
                     } else {
                         onProgressUpdate(75, "Inicializando motor de voz local ($activeLang)...")
                         val innerModelDir = modelRootDir.listFiles()?.find { it.isDirectory && File(it, "am").exists() } ?: modelRootDir
@@ -635,21 +758,23 @@ class VideoProcessor(
                         pcmFile.delete() // Cleanup raw pcm
                         
                         onProgressUpdate(90, "Formateando y estructurando marcas de tiempo...")
-                        val transcript = buildTranscriptWithTimestamps(jsonResults)
-                        if (transcript.trim().isEmpty()) {
-                            "**[FIN DE LA TRANSCRIPCIÓN LOCAL]**\n" +
+                        val voskTranscript = buildTranscriptWithTimestamps(jsonResults)
+                        if (voskTranscript.fullText.trim().isEmpty()) {
+                            val txt = "**[FIN DE LA TRANSCRIPCIÓN LOCAL]**\n" +
                             "El audio del video fue procesado, pero no se reconoció ninguna palabra en español o en el idioma del audio.\n\n" +
                             generateFallbackTranscript(notes, durationSec, extractedFrames)
+                            Transcript(emptyList(), txt)
                         } else {
-                            "Transcripción local del dispositivo:\n\n$transcript"
+                            Transcript(voskTranscript.words, "Transcripción local del dispositivo:\n\n${voskTranscript.fullText}")
                         }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                     onProgressUpdate(65, "Fallo en motor local: ${e.message}")
-                    "**[FALLO EN MOTOR LOCAL DE VOZ]**\n" +
+                    val txt = "**[FALLO EN MOTOR LOCAL DE VOZ]**\n" +
                     "Error: ${e.localizedMessage}.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    Transcript(emptyList(), txt)
                 }
             }
         } else if (selectedModel != null) {
@@ -658,18 +783,21 @@ class VideoProcessor(
                 val apiKey = selectedModel.apiKey
                 if (apiKey.isEmpty()) {
                     onProgressUpdate(60, "Error: API key vacía. Usando estimación...")
-                    "**[ERROR DE CONFIGURACIÓN]**\nLa API Key para Gemini (${selectedModel.name}) está vacía en Ajustes.\n\n" +
+                    val txt = "**[ERROR DE CONFIGURACIÓN]**\nLa API Key para Gemini (${selectedModel.name}) está vacía en Ajustes.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    Transcript(emptyList(), txt)
                 } else {
                     try {
-                        executeGeminiMultimodal(extractedFrames, notes, apiKey, selectedModel.endpoint, selectedModel.modelName)
+                        val text = executeGeminiMultimodal(extractedFrames, notes, apiKey, selectedModel.endpoint, selectedModel.modelName)
+                        Transcript(emptyList(), text)
                     } catch (e: Exception) {
                         onProgressUpdate(60, "Error en Gemini API: ${e.message}")
-                        "**[ERROR EN LLAMADA GEMINI API - ${selectedModel.name}]**\n" +
+                        val txt = "**[ERROR EN LLAMADA GEMINI API - ${selectedModel.name}]**\n" +
                         "La llamada no se completó debido al siguiente error: ${e.localizedMessage}. " +
                         "Por favor verifica la API Key, el endpoint o si el modelo '${selectedModel.modelName}' es soportado.\n\n" +
                         "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        Transcript(emptyList(), txt)
                     }
                 }
             } else {
@@ -677,8 +805,9 @@ class VideoProcessor(
                     val apiKey = selectedModel.apiKey
                     if (apiKey.isEmpty()) {
                         onProgressUpdate(60, "Error: API key vacía. Usando de estimación...")
-                        "**[ERROR DE CONFIGURACIÓN]**\nLa API Key para Whisper (${selectedModel.name}) está vacía en Ajustes.\n\n" +
+                        val txt = "**[ERROR DE CONFIGURACIÓN]**\nLa API Key para Whisper (${selectedModel.name}) está vacía en Ajustes.\n\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        Transcript(emptyList(), txt)
                     } else {
                         try {
                             onProgressUpdate(60, "Transcribiendo vía API remota (${selectedModel.name})...")
@@ -690,15 +819,16 @@ class VideoProcessor(
                             )
                         } catch (e: Exception) {
                             onProgressUpdate(60, "Error en API Whisper: ${e.message}")
-                            "**[ERROR EN TRANSCRIPCIÓN WHISPER REMOTE - ${selectedModel.name}]**\n" +
+                            val txt = "**[ERROR EN TRANSCRIPCIÓN WHISPER REMOTE - ${selectedModel.name}]**\n" +
                             "Error: ${e.localizedMessage}. Confirma si tu API Key, endpoint de red '${selectedModel.endpoint}' o el nombre del modelo '${selectedModel.modelName}' son correctos.\n\n" +
                             "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                             generateFallbackTranscript(notes, durationSec, extractedFrames)
+                            Transcript(emptyList(), txt)
                         }
                     }
                 } else {
                     onProgressUpdate(60, "Video sin audio para Whisper Remoto. Generando estimación...")
-                    generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    Transcript(emptyList(), generateFallbackTranscript(notes, durationSec, extractedFrames))
                 }
             }
         } else {
@@ -709,25 +839,29 @@ class VideoProcessor(
                 val geminiKey = if (buildConfigKey.isNotBlank() && buildConfigKey != "MY_GEMINI_API_KEY" && buildConfigKey.length > 10) buildConfigKey else settingsRepository.getApiKey()
                 if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
                     onProgressUpdate(60, "API key no disponible. Usando estimación...")
-                    "**[ERROR DE CONFIGURACIÓN]**\nNo se ha configurado la API Key de Gemini en los ajustes o BuildConfig.\n\n" +
+                    val txt = "**[ERROR DE CONFIGURACIÓN]**\nNo se ha configurado la API Key de Gemini en los ajustes o BuildConfig.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    Transcript(emptyList(), txt)
                 } else {
                     try {
-                        executeGeminiMultimodal(extractedFrames, notes, geminiKey, "", "gemini-1.5-flash")
+                        val text = executeGeminiMultimodal(extractedFrames, notes, geminiKey, "", "gemini-1.5-flash")
+                        Transcript(emptyList(), text)
                     } catch (e: Exception) {
                         onProgressUpdate(60, "Error en Gemini API: ${e.message}")
-                        "**[ERROR EN GEMINI API PLATA-FORMA]**\n" +
+                        val txt = "**[ERROR EN GEMINI API PLATA-FORMA]**\n" +
                         "Error: ${e.localizedMessage}.\n\n" +
                         "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        Transcript(emptyList(), txt)
                     }
                 }
             } else if (whisperMode == "REMOTE" && hasAudio) {
                 val apiKey = settingsRepository.getApiKey()
                 if (apiKey.isEmpty()) {
                     onProgressUpdate(60, "API key no configurada. Usando estimación...")
-                    "**[ERROR DE CONFIGURACIÓN]**\nNo se ha configurado la API Key de Whisper estándar de Ajustes.\n\n" +
+                    val txt = "**[ERROR DE CONFIGURACIÓN]**\nNo se ha configurado la API Key de Whisper estándar de Ajustes.\n\n" +
                     generateFallbackTranscript(notes, durationSec, extractedFrames)
+                    Transcript(emptyList(), txt)
                 } else {
                     try {
                         onProgressUpdate(60, "Transcribiendo vía API remota...")
@@ -739,14 +873,15 @@ class VideoProcessor(
                         )
                     } catch (e: Exception) {
                         onProgressUpdate(60, "Error en API remota: ${e.message}")
-                        "**[ERROR EN WHISPER REMOTO ESTÁNDAR]**\n" +
+                        val txt = "**[ERROR EN WHISPER REMOTO ESTÁNDAR]**\n" +
                         "Error: ${e.localizedMessage}.\n\n" +
                         "Marcas de tiempo de navegación estimadas sugeridas:\n" +
                         generateFallbackTranscript(notes, durationSec, extractedFrames)
+                        Transcript(emptyList(), txt)
                     }
                 }
             } else {
-                generateFallbackTranscript(notes, durationSec, extractedFrames)
+                Transcript(emptyList(), generateFallbackTranscript(notes, durationSec, extractedFrames))
             }
         }
     }
@@ -1004,7 +1139,7 @@ class VideoProcessor(
         wavOutputStream.close()
     }
 
-    private fun executeRemoteWhisper(videoFile: File, apiKey: String, baseUrl: String, model: String): String {
+    private fun executeRemoteWhisper(videoFile: File, apiKey: String, baseUrl: String, model: String): Transcript {
         val client = OkHttpClient.Builder()
             .connectTimeout(90, TimeUnit.SECONDS)
             .writeTimeout(90, TimeUnit.SECONDS)
@@ -1037,6 +1172,8 @@ class VideoProcessor(
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("model", model)
                 .addFormDataPart("response_format", "verbose_json")
+                .addFormDataPart("timestamp_granularities[]", "word")
+                .addFormDataPart("timestamp_granularities[]", "segment")
                 .addFormDataPart(
                     "file",
                     fileToUpload.name,
@@ -1055,28 +1192,54 @@ class VideoProcessor(
                     val jsonStr = response.body?.string() ?: ""
                     if (jsonStr.isNotEmpty()) {
                         val json = JSONObject(jsonStr)
-                        if (json.has("segments")) {
-                            val segments = json.getJSONArray("segments")
-                            val sb = StringBuilder()
-                            for (i in 0 until segments.length()) {
-                                val seg = segments.getJSONObject(i)
-                                val start = seg.optDouble("start", 0.0)
-                                val end = seg.optDouble("end", start + 3.0)
-                                val text = seg.optString("text", "")
-                                if (text.isNotBlank()) {
-                                    val min = (start / 60).toInt()
-                                    val sec = (start % 60).toInt()
-                                    sb.append(String.format(java.util.Locale.US, "<%.2f-%.2f>[%02d:%02d] %s\n", start, end, min, sec, text.trim()))
+                        val mainText = json.optString("text", "")
+
+                        // 1. Check if native "words" array came back
+                        if (json.has("words")) {
+                            val wordsArray = json.getJSONArray("words")
+                            val wordsList = mutableListOf<TranscriptWord>()
+                            for (i in 0 until wordsArray.length()) {
+                                val wObj = wordsArray.getJSONObject(i)
+                                val wText = wObj.optString("word", "").trim()
+                                val start = wObj.optDouble("start", 0.0).toFloat()
+                                val end = wObj.optDouble("end", (start + 0.3f).toDouble()).toFloat()
+                                if (wText.isNotEmpty()) {
+                                    wordsList.add(TranscriptWord(start, end, wText))
                                 }
                             }
-                            if (sb.isNotEmpty()) {
-                                return sb.toString()
+                            Log.d("VontextSync", "executeRemoteWhisper: ${wordsList.size} palabras nativas recibidas.")
+                            return Transcript(wordsList, mainText)
+                        }
+
+                        // 2. If "words" not present, construct words from json.segments
+                        if (json.has("segments")) {
+                            val segments = json.getJSONArray("segments")
+                            val wordsList = mutableListOf<TranscriptWord>()
+                            for (i in 0 until segments.length()) {
+                                val seg = segments.getJSONObject(i)
+                                val segStart = seg.optDouble("start", 0.0).toFloat()
+                                val segEnd = seg.optDouble("end", (segStart + 1.0f).toDouble()).toFloat()
+                                val segText = seg.optString("text", "").trim()
+                                if (segText.isNotEmpty()) {
+                                    val tokens = segText.split(Regex("\\s+")).filter { it.isNotEmpty() }
+                                    if (tokens.isNotEmpty()) {
+                                        val duration = (segEnd - segStart).coerceAtLeast(0.01f)
+                                        val step = duration / tokens.size
+                                        tokens.forEachIndexed { tokenIdx, token ->
+                                            val wStart = segStart + tokenIdx * step
+                                            val wEnd = wStart + step
+                                            wordsList.add(TranscriptWord(wStart, wEnd, token))
+                                        }
+                                    }
+                                }
                             }
+                            Log.d("VontextSync", "executeRemoteWhisper: ${wordsList.size} palabras repartidas proporcionalmente desde segments.")
+                            return Transcript(wordsList, mainText)
                         }
-                        val mainText = json.optString("text", "")
-                        if (mainText.isNotEmpty()) {
-                            return mainText
-                        }
+
+                        // 3. Neither words nor segments
+                        Log.d("VontextSync", "executeRemoteWhisper: 0 palabras (sin words ni segments).")
+                        return Transcript(emptyList(), mainText)
                     }
                 }
             }
@@ -1084,7 +1247,7 @@ class VideoProcessor(
             e.printStackTrace()
         }
 
-        // Fallback retry using standard response format if verbose_json failed or couldn't resolve segments
+        // Fallback retry using standard response format if verbose_json failed
         try {
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -1109,7 +1272,9 @@ class VideoProcessor(
                 }
                 val jsonStr = response.body?.string() ?: throw Exception("Respuesta de API vacía")
                 val json = JSONObject(jsonStr)
-                return json.optString("text", "")
+                val fallbackText = json.optString("text", "")
+                Log.d("VontextSync", "executeRemoteWhisper: fallback standard completado (0 palabras con timestamps).")
+                return Transcript(emptyList(), fallbackText)
             }
         } finally {
             if (tempAudioFile.exists()) {
@@ -1123,7 +1288,7 @@ class VideoProcessor(
         notes: String?,
         durationSec: Float,
         frames: List<FrameInfo>,
-        transcriptionText: String,
+        transcript: Transcript,
         whisperMode: String
     ) {
         val document = PdfDocument()
@@ -1132,26 +1297,12 @@ class VideoProcessor(
         val pageWidth = 595
         val pageHeight = 842
 
-        // Paint configurations
         val titlePaint = Paint().apply {
-            color = Color.rgb(30, 82, 179) // Vontext primary blue!
+            color = Color.rgb(30, 82, 179)
             textSize = 20f
             isFakeBoldText = true
             isAntiAlias = true
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
-        val headerPaint = Paint().apply {
-            color = Color.rgb(44, 62, 80)
-            textSize = 12f
-            isFakeBoldText = true
-            isAntiAlias = true
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
-        val textPaint = Paint().apply {
-            color = Color.BLACK
-            textSize = 10f
-            isAntiAlias = true
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
         }
         val textPaintForLayout = TextPaint().apply {
             color = Color.BLACK
@@ -1165,18 +1316,37 @@ class VideoProcessor(
             isAntiAlias = true
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
         }
-        val boldTextPaint = Paint().apply {
-            color = Color.BLACK
-            textSize = 10f
-            isFakeBoldText = true
-            isAntiAlias = true
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
 
         val includeTimestamps = settingsRepository.getIncludeTimestamps()
 
-        // Precompute the mapping of frame indices to transcription lines once to avoid redundant expensive calculations
-        val frameTextMap = precomputeFrameTranscriptMap(transcriptionText, frames)
+        // Map words to frames using pure assignWordsToFrames logic
+        val frameTimes = frames.map { it.timestampMs / 1000f }
+        val sortedWords = transcript.words.sortedBy { it.start }
+        val n = frameTimes.size
+        val wordsPerFrame = Array(n) { mutableListOf<TranscriptWord>() }
+
+        if (n > 0) {
+            for (w in sortedWords) {
+                val t = w.start
+                val targetIndex = when {
+                    t < frameTimes[0] -> 0
+                    t >= frameTimes[n - 1] -> n - 1
+                    else -> {
+                        var assigned = -1
+                        for (i in 0 until n - 1) {
+                            if (t >= frameTimes[i] && t < frameTimes[i + 1]) {
+                                assigned = i
+                                break
+                            }
+                        }
+                        if (assigned != -1) assigned else n - 1
+                    }
+                }
+                if (w.text.isNotBlank()) {
+                    wordsPerFrame[targetIndex].add(w)
+                }
+            }
+        }
 
         // --- PAGES: GRID OF FRAMES & TEXT ---
         var pageNum = 1
@@ -1203,7 +1373,6 @@ class VideoProcessor(
             // Load frame image and draw centered
             val bitmap = BitmapFactory.decodeFile(frame.path)
             if (bitmap != null) {
-                // Calculate size to preserve aspect ratio within 450x450 box
                 val maxImgWidth = 450f
                 val maxImgHeight = 450f
                 val scale = Math.min(maxImgWidth / bitmap.width, maxImgHeight / bitmap.height)
@@ -1224,7 +1393,7 @@ class VideoProcessor(
                 // If OCR detected UI elements/dialogs/actions, render subtitle pill/badge
                 var currentY = textY
                 if (frame.ocrText.isNotBlank()) {
-                    val ocrTag = "🔍 Análisis UI/Pantalla: ${frame.ocrText}"
+                    val ocrTag = "Texto en pantalla (OCR): ${frame.ocrText}"
                     canvas.save()
                     canvas.translate(50f, currentY)
                     val ocrLayout = StaticLayout.Builder.obtain(
@@ -1243,33 +1412,37 @@ class VideoProcessor(
                     currentY += ocrLayout.height + 14f
                 }
 
-                // Match specific transcript based on precomputed mapping
-                val relevantSnippetLines = frameTextMap[frameIndex] ?: emptyList()
-                val snippetTextBuilder = StringBuilder()
-                relevantSnippetLines.forEach { line ->
-                    val cleanLine = if (!includeTimestamps) {
-                        line.replace(Regex("^\\[\\d{2}:\\d{2}\\]\\s*"), "")
-                            .replace(Regex("^\\[\\d{2}:\\d{2}:\\d{2}\\]\\s*"), "")
-                    } else {
-                        line
-                    }
-                    if (cleanLine.trim().isNotEmpty()) {
-                        if (snippetTextBuilder.isNotEmpty()) snippetTextBuilder.append("\n")
-                        snippetTextBuilder.append(cleanLine.trim())
-                    }
+                // Render assigned words for this frame with [mm:ss–mm:ss] actual word range
+                val assignedWords = wordsPerFrame.getOrElse(frameIndex) { mutableListOf() }
+                val textToDraw: String = if (assignedWords.isNotEmpty()) {
+                    val firstW = assignedWords.first()
+                    val lastW = assignedWords.last()
+                    val startSecTotal = firstW.start.toInt()
+                    val endSecTotal = lastW.end.toInt()
+                    val rangeStr = String.format(
+                        java.util.Locale.US,
+                        "[%02d:%02d–%02d:%02d]",
+                        startSecTotal / 60,
+                        startSecTotal % 60,
+                        endSecTotal / 60,
+                        endSecTotal % 60
+                    )
+                    val sentence = assignedWords.joinToString(" ") { it.text.trim() }
+                    "$rangeStr $sentence"
+                } else {
+                    ""
                 }
 
-                val fullSnippet = snippetTextBuilder.toString()
                 val maxAvailableHeight = (pageHeight - currentY - 35).toFloat()
-                if (fullSnippet.isNotBlank() && maxAvailableHeight > 20f) {
+                if (textToDraw.isNotBlank() && maxAvailableHeight > 20f) {
                     canvas.save()
                     canvas.translate(50f, currentY)
                     val availableWidth = pageWidth - 100
                     canvas.clipRect(0f, 0f, availableWidth.toFloat(), maxAvailableHeight)
                     val transcriptLayout = StaticLayout.Builder.obtain(
-                        fullSnippet,
+                        textToDraw,
                         0,
-                        fullSnippet.length,
+                        textToDraw.length,
                         textPaintForLayout,
                         availableWidth
                     ).setAlignment(Layout.Alignment.ALIGN_NORMAL)
@@ -1290,256 +1463,6 @@ class VideoProcessor(
             document.writeTo(fos)
         }
         document.close()
-    }
-
-    private fun cleanTranscription(rawText: String): String {
-        return rawText.replace(Regex("<[^>]+>"), "")
-    }
-
-    private fun parseTimeString(str: String): Float? {
-        try {
-            val cleanStr = str.replace(",", ".").trim()
-            val parts = cleanStr.split(":")
-            if (parts.size == 3) {
-                val hrs = parts[0].toFloatOrNull() ?: 0f
-                val mins = parts[1].toFloatOrNull() ?: 0f
-                val secs = parts[2].toFloatOrNull() ?: 0f
-                return hrs * 3600f + mins * 60f + secs
-            } else if (parts.size == 2) {
-                val mins = parts[0].toFloatOrNull() ?: 0f
-                val secs = parts[1].toFloatOrNull() ?: 0f
-                return mins * 60f + secs
-            } else if (parts.size == 1) {
-                return parts[0].toFloatOrNull()
-            }
-        } catch (e: Exception) {}
-        return null
-    }
-
-    // Class level cache for transcription parsing to avoid repeating expensive string parsing for every frame
-    @Volatile
-    private var cachedRawText: String? = null
-    private var cachedSegments: List<TranscriptSegment> = emptyList()
-
-    private fun getOrParseSegments(fullText: String, allFrames: List<FrameInfo>): List<TranscriptSegment> {
-        val currentRaw = cachedRawText
-        if (currentRaw != null && currentRaw == fullText) {
-            return cachedSegments
-        }
-        synchronized(this) {
-            if (cachedRawText == fullText) {
-                return cachedSegments
-            }
-            val parsed = parseTranscriptToSegments(fullText, allFrames)
-            cachedSegments = parsed
-            cachedRawText = fullText
-            return parsed
-        }
-    }
-
-    private fun parseTranscriptToSegments(fullText: String, allFrames: List<FrameInfo>): List<TranscriptSegment> {
-        val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
-        if (lines.isEmpty()) return emptyList()
-
-        val frameTimeSecs = allFrames.map { it.timestampMs / 1000f }
-        val segments = mutableListOf<TranscriptSegment>()
-
-        // 1) Robust line-by-line SRT/VTT parsing if "-->" is found to avoid double-newline dependencies
-        if (fullText.contains("-->")) {
-            var i = 0
-            while (i < lines.size) {
-                val line = lines[i]
-                if (line.contains("-->")) {
-                    val parts = line.split("-->").map { it.trim() }
-                    if (parts.size >= 2) {
-                        var startSec = parseTimeString(parts[0])
-                        var endSec = parseTimeString(parts[1])
-                        if (startSec != null && endSec != null) {
-                            if (startSec > endSec) {
-                                val tmp = startSec
-                                startSec = endSec
-                                endSec = tmp
-                            }
-                            // Collect subsequent lines belonging to this subtitle segment
-                            val textLines = mutableListOf<String>()
-                            var j = i + 1
-                            while (j < lines.size) {
-                                val nextLine = lines[j]
-                                if (nextLine.contains("-->")) {
-                                    break
-                                }
-                                // Skip next index numbers if standard block separator exists
-                                if (nextLine.toIntOrNull() != null && j + 1 < lines.size && lines[j + 1].contains("-->")) {
-                                    break
-                                }
-                                textLines.add(nextLine)
-                                j++
-                            }
-                            val text = textLines.joinToString(" ").trim()
-                            if (text.isNotEmpty()) {
-                                segments.add(TranscriptSegment(startSec, endSec, text))
-                            }
-                        }
-                    }
-                }
-                i++
-            }
-        }
-
-        // 2) Standard line-by-line parsing if segments list remains empty
-        if (segments.isEmpty()) {
-            for (line in lines) {
-                var start: Float? = null
-                var end: Float? = null
-                var cleanText = line
-
-                // Match <start-end> format
-                val tagMatch = Regex("<(\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)>").find(line)
-                if (tagMatch != null) {
-                    start = tagMatch.groupValues[1].toFloatOrNull()
-                    end = tagMatch.groupValues[2].toFloatOrNull()
-                    cleanText = cleanText.replace(tagMatch.value, "").trim()
-                }
-
-                // Match [HH:MM:SS] or [MM:SS] format
-                val bracketsMatch = Regex("\\[(\\d+):(\\d+)(?::(\\d+))?\\]").find(cleanText)
-                if (bracketsMatch != null) {
-                    val part1 = bracketsMatch.groupValues[1].toIntOrNull() ?: 0
-                    val part2 = bracketsMatch.groupValues[2].toIntOrNull() ?: 0
-                    val part3 = bracketsMatch.groupValues[3].toIntOrNull()
-
-                    val calculatedStart = if (part3 != null) {
-                        (part1 * 3600 + part2 * 60 + part3).toFloat()
-                    } else {
-                        (part1 * 60 + part2).toFloat()
-                    }
-                    if (start == null) {
-                        start = calculatedStart
-                    }
-                    cleanText = cleanText.replace(bracketsMatch.value, "").trim()
-                }
-
-                if (start != null) {
-                    val finalEnd = end ?: (start + 2.5f)
-                    segments.add(TranscriptSegment(start, finalEnd, cleanText))
-                }
-            }
-        }
-
-        // 3) Timestamp scaling detection
-        var finalSegments = segments.toList()
-        val maxStart = finalSegments.map { it.start }.maxOrNull() ?: 0f
-        val videoDuration = frameTimeSecs.maxOrNull() ?: 0f
-        
-        // Robust scaling check to avoid false positives on short dialogues or early active frames
-        if (videoDuration > 3.0f && maxStart > 0f) {
-            val avgDuration = finalSegments.map { it.end - it.start }.average()
-            if (maxStart < 1.0f || (avgDuration > 0 && avgDuration < 0.15)) {
-                // Ensure scaling by 1000 doesn't overshoot maximum video duration excessively
-                if (maxStart * 1000f <= videoDuration + 10f) {
-                    finalSegments = finalSegments.map { seg ->
-                        TranscriptSegment(seg.start * 1000f, seg.end * 1000f, seg.text)
-                    }
-                }
-            }
-        }
-
-        return finalSegments
-    }
-
-    private fun precomputeFrameTranscriptMap(
-        fullText: String,
-        allFrames: List<FrameInfo>
-    ): Map<Int, List<String>> {
-        val lines = fullText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
-        val resultMap = mutableMapOf<Int, MutableList<String>>()
-        for (i in allFrames.indices) {
-            resultMap[i] = mutableListOf()
-        }
-        if (lines.isEmpty() || allFrames.isEmpty()) return resultMap.mapValues { it.value.toList() }
-
-        val segments = getOrParseSegments(fullText, allFrames)
-
-        if (segments.isEmpty()) {
-            // No recognizable timestamps. Distribute lines proportionally
-            val approxLinesPerFrame = Math.ceil(lines.size.toDouble() / allFrames.size).toInt()
-            for (frameIndex in allFrames.indices) {
-                val startIdx = frameIndex * approxLinesPerFrame
-                val endIdx = Math.min(lines.size, startIdx + approxLinesPerFrame)
-                if (startIdx < lines.size) {
-                    resultMap[frameIndex]?.addAll(lines.subList(startIdx, endIdx))
-                }
-            }
-            return resultMap.mapValues { it.value.toList() }
-        }
-
-        // Dynamically compute exclusive contiguous temporal windows for each frame to map logically
-        val frameTimes = allFrames.map { it.timestampMs / 1000f }
-        val n = frameTimes.size
-        val frameWindows = ArrayList<Pair<Float, Float>>()
-        for (idx in 0 until n) {
-            val startBound = if (idx == 0) {
-                0f
-            } else {
-                (frameTimes[idx - 1] + frameTimes[idx]) / 2f
-            }
-            val endBound = if (idx == n - 1) {
-                Float.MAX_VALUE // Carry up to infinite duration of last segment
-            } else {
-                (frameTimes[idx] + frameTimes[idx + 1]) / 2f
-            }
-            frameWindows.add(Pair(startBound, endBound))
-        }
-
-        // Assign each segment using overlap/midpoint matching
-        for (seg in segments) {
-            val segStart = seg.start
-            val segEnd = seg.end
-            val segMid = (segStart + segEnd) / 2f
-
-            // Find the best frame index based on maximum time overlap with its exclusive window
-            var bestIdx = -1
-            var maxOverlap = -1f
-
-            for (idx in 0 until n) {
-                val (wStart, wEnd) = frameWindows[idx]
-                val overlapStart = Math.max(segStart, wStart)
-                val overlapEnd = Math.min(segEnd, wEnd)
-                val overlap = overlapEnd - overlapStart
-                if (overlap > maxOverlap && overlap > 0f) {
-                    maxOverlap = overlap
-                    bestIdx = idx
-                }
-            }
-
-            // If no positive overlap, fall back to matching the midpoint in a window
-            if (bestIdx == -1) {
-                for (idx in 0 until n) {
-                    val (wStart, wEnd) = frameWindows[idx]
-                    if (segMid >= wStart && segMid < wEnd) {
-                        bestIdx = idx
-                        break
-                    }
-                }
-            }
-
-            // If still not matched, find closest frame by timestamp absolute difference
-            if (bestIdx == -1) {
-                bestIdx = frameTimes.indices.minByOrNull { idx ->
-                    Math.abs(frameTimes[idx] - segMid)
-                } ?: 0
-            }
-
-            if (bestIdx != -1) {
-                val totalSec = segStart.toInt()
-                val min = totalSec / 60
-                val sec = totalSec % 60
-                val timeStr = String.format(java.util.Locale.US, "[%02d:%02d]", min, sec)
-                resultMap[bestIdx]?.add("$timeStr ${seg.text}")
-            }
-        }
-
-        return resultMap.mapValues { it.value.toList() }
     }
 
     private fun createZip(srcFolder: File, destZipFile: File) {
@@ -1707,38 +1630,36 @@ class VideoProcessor(
         }
     }
 
-    private fun buildTranscriptWithTimestamps(jsonResultList: List<String>): String {
-        val sb = java.lang.StringBuilder()
+    private fun buildTranscriptWithTimestamps(jsonResultList: List<String>): Transcript {
+        val wordsList = mutableListOf<TranscriptWord>()
+        val textList = mutableListOf<String>()
+
         for (jsonStr in jsonResultList) {
             try {
                 val json = JSONObject(jsonStr)
-                val text = json.optString("text", "")
-                if (text.isEmpty()) continue
+                val text = json.optString("text", "").trim()
+                if (text.isNotEmpty()) {
+                    textList.add(text)
+                }
 
                 val resultArray = json.optJSONArray("result")
                 if (resultArray != null && resultArray.length() > 0) {
-                    val firstWord = resultArray.getJSONObject(0)
-                    val startTime = firstWord.optDouble("start", 0.0)
-                    val lastWord = resultArray.getJSONObject(resultArray.length() - 1)
-                    val endTime = lastWord.optDouble("end", startTime + 2.0)
-                    val minutes = (startTime / 60).toInt()
-                    val seconds = (startTime % 60).toInt()
-                    val timeStr = String.format("[%02d:%02d]", minutes, seconds)
-                    sb.append(String.format(java.util.Locale.US, "<%.2f-%.2f>%s %s\n", startTime, endTime, timeStr, text))
-                } else {
-                    sb.append(text).append("\n")
+                    for (i in 0 until resultArray.length()) {
+                        val wordObj = resultArray.getJSONObject(i)
+                        val wordText = wordObj.optString("word", "").trim()
+                        val start = wordObj.optDouble("start", 0.0).toFloat()
+                        val end = wordObj.optDouble("end", (start + 0.3f).toDouble()).toFloat()
+                        if (wordText.isNotEmpty()) {
+                            wordsList.add(TranscriptWord(start, end, wordText))
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 // Ignore parsing errors
             }
         }
-        return sb.toString()
+        val fullText = textList.joinToString(" ")
+        return Transcript(wordsList, fullText)
     }
 }
-
-private data class TranscriptSegment(
-    val start: Float,
-    val end: Float,
-    val text: String
-)
 
