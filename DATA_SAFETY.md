@@ -1,24 +1,52 @@
 # Formulario de Seguridad de los Datos (Google Play Data Safety)
 
-Cuando crees la ficha de **Vontext** en Google Play Console, te pedirán completar el cuestionario de **Seguridad de los Datos (Data Safety)**. Utiliza esta guía con las respuestas exactas y sus justificaciones técnicas oficiales:
+Guía técnica oficial y transparente para completar el cuestionario de **Seguridad de los Datos (Data Safety)** en Google Play Console para **Vontext v2.3.1**:
 
 ---
 
-## 1. Respuestas para el Cuestionario de Google Play Console
+## 1. Cuestionario General de Seguridad de los Datos
 
-| Pregunta de Google Play | Respuesta Recomendada | Justificación Técnica |
+| Pregunta de Google Play Console | Respuesta Declarada | Justificación Técnica Oficial |
 | :--- | :--- | :--- |
-| **¿Tu app recopila o comparte datos de los usuarios?** | **Sí** *(al usar transcripción remota con Whisper/Gemini)* o **No** *(si solo se utilizara el motor offline).* | Declarar que recopila archivos de audio **únicamente** para la funcionalidad principal solicitada explícitamente por el usuario (transcripción y generación del reporte). |
-| **¿Los datos se transfieren mediante una conexión segura (HTTPS)?** | **Sí** | Todas las llamadas de red dirigidas a OpenAI / Groq / Google Gemini se efectúan mediante canales TLS 1.3 / HTTPS cifrados de extremo a extremo. |
-| **¿Permites a los usuarios solicitar que se borren sus datos?** | **Sí** | Todo se almacena localmente en el dispositivo. En la app existe el botón "Limpiar Todo" o "Eliminar" en el historial, y borrar los datos de la app desde los ajustes de Android elimina de inmediato toda la información. |
-| **¿Tu app recopila datos de ubicación o identificadores personales?** | **No** | Vontext no solicita permisos de GPS/Ubicación, ni consulta IMEI, número telefónico, contactos ni identificadores de publicidad para rastreo. |
-| **Tipos de datos:** | **Archivos de audio y video** *(procesados únicamente para generar el reporte de depuración).* | Los datos se procesan de forma efímera para el reporte y nunca se emplean con fines publicitarios, de rastreo comercial ni venta a intermediarios. |
+| **¿Tu app recopila o comparte datos de los usuarios?** | **Sí** | Dado que la app ofrece la opción de conectar con servicios externos de IA (Google Gemini, OpenAI, Groq) por solicitud voluntaria del usuario, se debe declarar **Sí** de forma transparente (aunque exista un modo local offline). |
+| **¿Todos los datos de los usuarios recopilados por tu app se cifran en tránsito?** | **Sí** | Toda comunicación con APIs externas (Gemini, OpenAI, Groq) se realiza de forma obligatoria bajo canales cifrados TLS 1.3 / HTTPS. |
+| **¿Proporcionas una forma para que los usuarios soliciten que se eliminen sus datos?** | **Sí** | Todo se guarda localmente en el dispositivo. La app cuenta con la opción "Eliminar" individual y "Limpiar Todo" en el Historial. La desinstalación o borrado de datos de la app elimina de inmediato todos los archivos. |
+| **¿Tu app recopila datos de ubicación precisa/aproximada o identificadores personales?** | **No** | No se solicita GPS ni ubicación por red. No se leen números telefónicos, contactos, libreta de direcciones, IMEI ni identificadores de publicidad para seguimiento de usuarios. |
 
 ---
 
-## 2. Declaración de Servicios en Primer Plano (Foreground Service Declaration)
+## 2. Tipos de Datos a Declarar en Google Play Console
 
-Para el permiso `FOREGROUND_SERVICE_SPECIAL_USE`:
-- **Tipo seleccionado en Play Console**: Herramientas para desarrolladores / Productividad (`Developer Tools / Debugging`).
-- **Descripción de la justificación**:
-  > "Vontext uses a foreground service with a persistent notification while the user enables the floating debug bubble. This allows developers and testers to capture on-demand logcat dumps and return to the session while reproducing bugs across third-party applications. The service is explicitly initiated and terminated by the user."
+### A. Fotos y Videos
+- **Tipo específico:** Fotos / Videos (Capturas de fotogramas del video y grabaciones de pantalla).
+- **¿Se recopilan?** Sí (procesados y opcionalmente transmitidos si el usuario elige el modelo multimodal de Gemini).
+- **¿Se comparten con terceros?** No se comparten con brokers ni anunciantes. Se transmiten únicamente al proveedor de inferencia elegido por el usuario (API de Google Gemini) para la síntesis de pantalla solicitada.
+- **¿El usuario puede decidir si se recopilan?** Sí (el usuario decide qué videos procesar y qué modelo seleccionar; el modo local Vosk no transmite nada).
+- **Finalidad:** Funcionalidad de la aplicación (análisis visual de pantallas en grabaciones de prueba técnica).
+
+### B. Audio
+- **Tipo específico:** Grabaciones de voz / audio.
+- **¿Se recopilan?** Sí (procesados y opcionalmente transmitidos si el usuario configura un motor remoto de transcripción como Whisper/OpenAI).
+- **¿Se comparten con terceros?** No se comparten comercialmente. Se transmiten exclusivamente al endpoint configurado por el usuario.
+- **¿El usuario puede decidir si se recopilan?** Sí (el uso de modelos remotos es opcional; el motor local Vosk procesa el audio 100% en el dispositivo).
+- **Finalidad:** Funcionalidad de la aplicación (transcripción de audio a texto para el reporte de bugs).
+
+### C. Registros de Diagnóstico y Actividad de la App
+- **Tipo específico:** Registros de diagnóstico (extractos de Logcat, reportes de fallos técnicos).
+- **¿Se recopilan?** Sí (a petición del usuario para adjuntar evidencia técnica en el archivo ZIP del reporte).
+- **¿Se comparten con terceros?** No. Permanecen en el dispositivo del usuario. Además, se aplica un algoritmo de redacción que censura automáticamente claves de API, tokens Bearer, contraseñas y correos antes de escribirlos en disco.
+- **Finalidad:** Análisis de fallos y depuración de software.
+
+---
+
+## 3. Declaración de Servicios en Primer Plano (Foreground Service Declaration)
+
+Vontext utiliza un servicio en primer plano para la grabación de pantalla y micrófono del reproductor de bugs:
+
+- **Tipos de Servicio en Primer Plano declarados en el Manifiesto**:
+  `android:foregroundServiceType="mediaProjection|microphone"`
+- **Permisos requeridos en Google Play**:
+  - `FOREGROUND_SERVICE_MEDIA_PROJECTION`
+  - `FOREGROUND_SERVICE_MICROPHONE`
+- **Justificación para el equipo de revisión de Google Play**:
+  > "Vontext is a developer and QA debugging tool that captures screen recordings and tester audio narration to generate structured bug reports. The foreground service is initiated strictly when the user activates the floating recorder bubble and grants MediaProjection consent, maintaining a persistent system notification with a visible stop control and timer while screen and microphone capture is actively in progress."

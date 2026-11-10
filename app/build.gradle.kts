@@ -7,15 +7,15 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "dev.laar19.vontext"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
     defaultConfig {
-        applicationId = "com.aistudio.vontext.hzqypl"
+        applicationId = "dev.laar19.vontext"
         minSdk = 24
         targetSdk = 36
-        versionCode = 5
-        versionName = "2.3.0"
+        versionCode = 6
+        versionName = "2.3.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -39,7 +39,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
